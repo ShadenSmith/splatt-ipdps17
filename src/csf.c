@@ -2,6 +2,7 @@
 /******************************************************************************
  * INCLUDES
  *****************************************************************************/
+#include <omp.h>
 #include "csf.h"
 #include "sort.h"
 #include "tile.h"
@@ -199,6 +200,142 @@ static void p_order_dims_large(
   }
 
 }
+
+
+void
+splatt_csf_write_file(
+  splatt_csf const * const ct,
+  FILE * fout)
+{
+  fwrite(&ct->nnz, sizeof(ct->nnz), 1, fout);
+  fwrite(&ct->nmodes, sizeof(ct->nmodes), 1, fout);
+  fwrite(ct->dims, sizeof(*ct->dims), ct->nmodes, fout);
+  fwrite(ct->dim_perm, sizeof(*ct->dim_perm), ct->nmodes, fout);
+  fwrite(&ct->which_tile, sizeof(ct->which_tile), 1, fout);
+  fwrite(&ct->ntiles, sizeof(ct->ntiles), 1, fout);
+  fwrite(ct->tile_dims, sizeof(*ct->tile_dims), ct->nmodes, fout);
+
+  for(idx_t t=0; t < ct->ntiles; ++t) {
+    csf_sparsity const * const ft = ct->pt + t;
+
+    fwrite(ft->nfibs, sizeof(*ft->nfibs), ct->nmodes, fout);
+
+    for(idx_t m=0; m < ct->nmodes-1; ++m) {
+      fwrite(ft->fptr[m], sizeof(*ft->fptr[m]), ft->nfibs[m] + 1, fout);
+      if (m != 0) { // FIXME
+        fwrite(ft->fids[m], sizeof(*ft->fids[m]), ft->nfibs[m], fout);
+      }
+    }
+
+    fwrite(ft->fids[ct->nmodes - 1], sizeof(*ft->fids[ct->nmodes - 1]), ft->nfibs[ct->nmodes-1], fout);
+    fwrite(ft->vals, sizeof(*ft->vals), ft->nfibs[ct->nmodes-1], fout);
+  }
+}
+
+void
+splatt_csf_write(
+  splatt_csf const * const ct,
+  char const * const ofname)
+{
+  FILE * fout = fopen(ofname,"w");
+  if (fout == NULL) {
+    fprintf(stderr, "SPLATT ERROR: failed to open '%s'\n.", ofname);
+    return;
+  }
+
+  timer_start(&timers[TIMER_IO]);
+  splatt_csf_write_file(ct, fout);
+  splatt_csf_write_file(ct + 1, fout);
+  timer_stop(&timers[TIMER_IO]);
+
+  fclose(fout);
+}
+
+
+void splatt_csf_read_file(
+  splatt_csf *ct, FILE * fin)
+{
+  fread(&ct->nnz, sizeof(ct->nnz), 1, fin);
+  fread(&ct->nmodes, sizeof(ct->nmodes), 1, fin);
+  fread(ct->dims, sizeof(*ct->dims), ct->nmodes, fin);
+  fread(ct->dim_perm, sizeof(*ct->dim_perm), ct->nmodes, fin);
+  fread(&ct->which_tile, sizeof(ct->which_tile), 1, fin);
+  fread(&ct->ntiles, sizeof(ct->ntiles), 1, fin);
+  fread(&ct->tile_dims, sizeof(*ct->tile_dims), ct->nmodes, fin);
+
+  ct->pt = malloc(sizeof(*(ct->pt))*ct->ntiles);
+
+  for(idx_t t=0; t < ct->ntiles; ++t) {
+    csf_sparsity * ft = ct->pt + t;
+
+    fread(ft->nfibs, sizeof(*ft->nfibs), ct->nmodes, fin);
+
+    for(idx_t m=0; m < ct->nmodes-1; ++m) {
+      ft->fptr[m] = malloc((ft->nfibs[m]+1) * sizeof(**(ft->fptr)));
+      fread(ft->fptr[m], sizeof(*ft->fptr[m]), ft->nfibs[m]+1, fin);
+      if (m != 0) { // FIXME
+        ft->fids[m] = malloc(ft->nfibs[m] * sizeof(**(ft->fids)));
+        fread(ft->fids[m], sizeof(*ft->fids[m]), ft->nfibs[m], fin);
+      }
+      else {
+        ft->fids[m] = NULL;
+      }
+    }
+
+    ft->fids[ct->nmodes-1] = malloc(ft->nfibs[ct->nmodes-1] * sizeof(**(ft->fids)));
+    ft->vals               = malloc(ft->nfibs[ct->nmodes-1] * sizeof(*(ft->vals)));
+
+    fread(ft->fids[ct->nmodes-1], sizeof(*ft->fids[ct->nmodes-1]), ft->nfibs[ct->nmodes-1], fin);
+    fread(ft->vals, sizeof(*ft->vals), ft->nfibs[ct->nmodes-1], fin);
+  }
+}
+
+int splatt_csf_equals(splatt_csf *ct1, splatt_csf *ct2)
+{
+  if (ct1->nnz != ct2->nnz) return 0;
+  if (ct1->nmodes != ct2->nmodes) return 0;
+  if (memcmp(ct1->dims, ct2->dims, sizeof(*ct1->dims)*ct1->nmodes)) return 0;
+  if (memcmp(ct1->dim_perm, ct2->dim_perm, sizeof(*ct1->dim_perm)*ct1->nmodes)) return 0;
+  if (ct1->which_tile != ct2->which_tile) return 0;
+  if (ct1->ntiles != ct2->ntiles) return 0;
+  if (memcmp(ct1->tile_dims, ct2->tile_dims, sizeof(*ct1->tile_dims)*ct1->nmodes)) return 0;
+  
+  for(idx_t t=0; t < ct1->ntiles; ++t) {
+    csf_sparsity const * const ft1 = ct1->pt + t;
+    csf_sparsity const * const ft2 = ct2->pt + t;
+
+    if (memcmp(ft1->nfibs, ft2->nfibs, sizeof(*ft1->nfibs)*ct1->nmodes)) return 0;
+    for(idx_t m=0; m < ct1->nmodes-1; ++m) {
+      if (memcmp(ft1->fptr[m], ft2->fptr[m], sizeof(*ft1->fptr[m])*(ft1->nfibs[m] + 1))) return 0;
+      if (m != 0 && memcmp(ft1->fids[m], ft2->fids[m], sizeof(*ft1->fids[m])*ft1->nfibs[m])) return 0;
+    }
+
+    if (memcmp(ft1->fids[ct1->nmodes - 1], ft2->fids[ct2->nmodes - 1], sizeof(*ft1->fids[ct1->nmodes - 1])*ft1->nfibs[ct1->nmodes-1])) return 0;
+    if (memcmp(ft1->vals, ft2->vals, sizeof(*ft1->vals)*ft1->nfibs[ct1->nmodes-1])) return 0;
+  }
+
+  return 1;
+}
+
+void
+splatt_csf_read(
+  splatt_csf *ct,
+  char const * const ifname)
+{
+  FILE * fin = fopen(ifname,"r");
+  if (fin == NULL) {
+    fprintf(stderr, "SPLATT ERROR: failed to open '%s'\n.", ifname);
+    return;
+  }
+
+  timer_start(&timers[TIMER_IO]);
+  splatt_csf_read_file(ct, fin);
+  splatt_csf_read_file(ct + 1, fin);
+  timer_stop(&timers[TIMER_IO]);
+
+  fclose(fin);
+}
+
 
 
 /**
@@ -424,6 +561,20 @@ static void p_mk_fptr(
   fp[nfibs] = nnz;
 }
 
+void par_memcpy(void *dst, const void *src, size_t n)
+{
+#pragma omp parallel
+  {
+    int nthreads = omp_get_num_threads();
+    int tid = omp_get_thread_num();
+
+    int n_per_thread = (n + nthreads - 1)/nthreads;
+    int n_begin = SS_MIN(n_per_thread*tid, n);
+    int n_end = SS_MIN(n_begin + n_per_thread, n);
+
+    memcpy(dst + n_begin, src + n_begin, n_end - n_begin);
+  }
+}
 
 /**
 * @brief Allocate and fill a CSF tensor from a coordinate tensor without
@@ -451,9 +602,9 @@ static void p_csf_alloc_untiled(
   pt->nfibs[nmodes-1] = ct->nnz;
   pt->fids[nmodes-1] = malloc(ct->nnz * sizeof(**(pt->fids)));
   pt->vals           = malloc(ct->nnz * sizeof(*(pt->vals)));
-  memcpy(pt->fids[nmodes-1], tt->ind[ct->dim_perm[nmodes-1]],
+  par_memcpy(pt->fids[nmodes-1], tt->ind[ct->dim_perm[nmodes-1]],
       ct->nnz * sizeof(**(pt->fids)));
-  memcpy(pt->vals, tt->vals, ct->nnz * sizeof(*(pt->vals)));
+  par_memcpy(pt->vals, tt->vals, ct->nnz * sizeof(*(pt->vals)));
 
   /* setup a basic tile ptr for one tile */
   idx_t nnz_ptr[2];
@@ -681,9 +832,11 @@ size_t csf_storage(
     break;
   }
 
-  size_t bytes = 0;
+  size_t total_bytes = 0;
   for(idx_t m=0; m < ntensors; ++m) {
-    splatt_csf const * const ct = tensors + m;
+    size_t bytes = 0;
+
+    splatt_csf * const ct = (splatt_csf *)(tensors + m);
     bytes += ct->nnz * sizeof(*(ct->pt->vals)); /* vals */
     bytes += ct->nnz * sizeof(**(ct->pt->fids)); /* fids[nmodes] */
     bytes += ct->ntiles * sizeof(*(ct->pt)); /* pt */
@@ -698,9 +851,12 @@ size_t csf_storage(
         }
       }
     }
+
+    ct->storage = bytes;
+    total_bytes += bytes;
   }
 
-  return bytes;
+  return total_bytes;
 }
 
 

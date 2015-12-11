@@ -44,6 +44,23 @@ splatt_csf * csf_alloc(
   sptensor_t * const tt,
   double const * const opts);
 
+void
+splatt_csf_write_file(
+  splatt_csf const * const ct,
+  FILE * fout);
+
+void splatt_csf_read_file(
+  splatt_csf *ct, FILE * fin);
+
+void
+splatt_csf_write(
+  splatt_csf const * const ct,
+  char const * const ofname);
+
+void
+splatt_csf_read(
+  splatt_csf *ct,
+  char const * const ifname);
 
 #define csf_alloc_mode splatt_csf_alloc_mode
 /**
@@ -102,6 +119,9 @@ size_t csf_storage(
   splatt_csf const * const tensors,
   double const * const opts);
 
+void csf_stats(
+  splatt_csf const * const tensors,
+  double const * const opts);
 
 #define csf_frobsq splatt_csf_frobsq
 /**
