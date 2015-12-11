@@ -14,7 +14,7 @@
 #include <mpi.h>
 #endif
 
-
+#include <stdlib.h>
 
 
 
@@ -283,6 +283,9 @@ typedef struct splatt_csf
 
   /** @brief Sparsity structures -- one for each tile. */
   csf_sparsity * pt;
+
+  /** @brief Storage size in bytes -- lazy initialized */
+  size_t storage;
 } splatt_csf;
 
 
@@ -294,7 +297,7 @@ typedef struct splatt_csf
  *****************************************************************************/
 
 #ifdef __cplusplus
-extern 'C' {
+extern "C" {
 #endif
 
 /*
