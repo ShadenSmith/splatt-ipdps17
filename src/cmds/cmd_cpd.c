@@ -117,6 +117,7 @@ static struct argp cpd_argp =
 /******************************************************************************
  * SPLATT-CPD
  *****************************************************************************/
+extern int splatt_csf_equals(splatt_csf *ct1, splatt_csf *ct2);
 void splatt_cpd_cmd(
   int argc,
   char ** argv)
@@ -126,28 +127,58 @@ void splatt_cpd_cmd(
   default_cpd_opts(&args);
   argp_parse(&cpd_argp, argc, argv, ARGP_IN_ORDER, 0, &args);
 
-  sptensor_t * tt = NULL;
-
   print_header();
 
-  tt = tt_read(args.ifname);
-  if(tt == NULL) {
-    return;
-  }
-
-  /* print basic tensor stats? */
   splatt_verbosity_type which_verb = args.opts[SPLATT_OPTION_VERBOSITY];
-  if(which_verb >= SPLATT_VERBOSITY_LOW) {
-    stats_tt(tt, args.ifname, STATS_BASIC, 0, NULL);
+  splatt_csf * csf = NULL;
+  idx_t nmodes;
+
+  int l = strlen(args.ifname);
+  if (l > 4 && !strcmp(args.ifname + l - 4, ".csf")) {
+    csf = malloc(sizeof(*csf)*2);
+    splatt_csf_read(csf, args.ifname);
+    nmodes = csf[0].nmodes;
+
+#ifdef SPLATT_CHECK_CSF_READ
+    char buf[256];
+    strcpy(buf, args.ifname);
+    strcpy(buf + l - 4, ".tns");
+
+    sptensor_t * tt = tt_read(buf);
+    if(tt == NULL) {
+      return;
+    }
+
+    /* print basic tensor stats? */
+    if(which_verb >= SPLATT_VERBOSITY_LOW) {
+      stats_tt(tt, args.ifname, STATS_BASIC, 0, NULL);
+    }
+
+    splatt_csf * csf2 = splatt_csf_alloc(tt, args.opts);
+    assert(splatt_csf_equals(csf, csf2));
+    assert(splatt_csf_equals(csf + 1, csf2 + 1));
+#endif
   }
+  else {
+    sptensor_t * tt = tt_read(args.ifname);
+    if(tt == NULL) {
+      return;
+    }
 
-  splatt_csf * csf = splatt_csf_alloc(tt, args.opts);
+    /* print basic tensor stats? */
+    if(which_verb >= SPLATT_VERBOSITY_LOW) {
+      stats_tt(tt, args.ifname, STATS_BASIC, 0, NULL);
+    }
 
-  idx_t nmodes = tt->nmodes;
-  tt_free(tt);
+    csf = splatt_csf_alloc(tt, args.opts);
+
+    nmodes = tt->nmodes;
+    tt_free(tt);
+  }
 
   /* print CPD stats? */
   if(which_verb >= SPLATT_VERBOSITY_LOW) {
+    stats_csf(csf);
     cpd_stats(csf, args.nfactors, args.opts);
   }
 
