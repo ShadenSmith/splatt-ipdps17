@@ -16,7 +16,6 @@ endif()
 
 find_package(OpenMP REQUIRED)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
 
 # ALL LIBRARIES -- will concatenate to this
@@ -44,7 +43,7 @@ if (DEFINED DEBUG)
 else()
   message("Building in RELEASE mode.")
   set(CMAKE_BUILD_TYPE Release)
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -xHost")
 endif()
 
 # check for MT-Metis support
@@ -72,11 +71,9 @@ add_definitions(-D_GNU_SOURCE)
 
 set(C_DEFINES "${C_DEFINES}")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${C_DEFINES}")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -funroll-loops")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ftree-vectorize")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fgnu89-inline")
+#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ftree-vectorize")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fstrict-aliasing")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
 #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fopt-info-vec")
@@ -100,9 +97,12 @@ else()
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w")
 endif()
 
+set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -restrict")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fgnu89-inline")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-file(GLOB SPLATT_SOURCES src/*.c ${MPI_SOURCES})
+file(GLOB SPLATT_SOURCES src/*.c src/*.cc ${MPI_SOURCES})
 
 # Generate splatt library
 add_subdirectory(lib)
