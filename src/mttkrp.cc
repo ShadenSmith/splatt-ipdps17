@@ -322,13 +322,50 @@ static void p_csf_mttkrp_root3_(
 
   val_t * const restrict accumF
       = (val_t *) thds[omp_get_thread_num()].scratch[0];
+  val_t * const restrict accumO
+      = (val_t *) thds[omp_get_thread_num()].scratch[2];
+
+  assert(sids == NULL);
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
-  #pragma omp for schedule(dynamic, 16) nowait
-  for(idx_t s=0; s < nslices; ++s) {
-    idx_t const fid = (sids == NULL) ? s : sids[s];
+  int nthreads = omp_get_num_threads();
+  int tid = omp_get_thread_num();
 
-    val_t * const restrict mv = ovals + (fid * NFACTORS);
+  int nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
+  int count = nslices;
+  int first = 0;
+  int val = nnz_per_thread*tid;
+  while (count > 0) {
+    int it = first; int step = count/2; it += step;
+    if (fptr[sptr[it]] < val) {
+      first = it + 1;
+      count -= step + 1;
+    }
+    else count = step;
+  }
+  int s_begin = tid == 0 ? 0 : first;
+
+  count = nslices - first;
+  val += nnz_per_thread;
+  while (count > 0) {
+    int it = first; int step = count/2; it += step;
+    if (fptr[sptr[it]] < val) {
+      first = it + 1;
+      count -= step + 1;
+    }
+    else count = step;
+  }
+  int s_end = tid == nthreads - 1 ? nslices : first;
+
+  //printf("[%d] %d-%d %ld\n", tid, s_begin, s_end, fptr[sptr[s_end]] - fptr[sptr[s_begin]]);
+
+  //#pragma omp for schedule(dynamic, 16) nowait
+  for(idx_t s=s_begin; s < s_end; ++s) {
+    idx_t const fid = s;
+
+    for(idx_t r=0; r < NFACTORS; ++r) {
+      accumO[r] = 0;
+    }
 
     /* foreach fiber in slice */
     for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
@@ -352,8 +389,14 @@ static void p_csf_mttkrp_root3_(
       /* scale inner products by row of A and update to M */
       val_t const * const restrict av = avals  + (fids[f] * NFACTORS);
       for(idx_t r=0; r < NFACTORS; ++r) {
-        mv[r] += accumF[r] * av[r];
+        accumO[r] += accumF[r] * av[r];
       }
+    }
+
+    val_t * const restrict mv = ovals + (fid * NFACTORS);
+#pragma vector nontemporal(mv)
+    for(idx_t r=0; r < NFACTORS; ++r) {
+      mv[r] = accumO[r];
     }
   }
 }
@@ -435,15 +478,72 @@ static void p_csf_mttkrp_root3(
     size_t fbytes = ct->storage;
     double gbps = (mbytes + fbytes)/time.seconds/1e9;
 
-    char * fstorage = bytes_str(fbytes);
-    char * mstorage = bytes_str(mbytes);
-
-    printf("       p_csf_mttkrp_root3 (%0.3fs, %.3f GBps) %ld %ld %s %s\n",
-        time.seconds, gbps, bdim, adim, fstorage, mstorage);
-    free(fstorage);
-    free(mstorage);
+    printf("       p_csf_mttkrp_root3 (%0.3fs, %.3f GBps)\n",
+        time.seconds, gbps);
   }
 }
+
+template<int NFACTORS>
+static void p_csf_mttkrp_internal3_(
+  splatt_csf const * const ct,
+  idx_t const tile_id,
+  matrix_t ** mats,
+  thd_info * const thds)
+{
+  val_t const * const vals = ct->pt[tile_id].vals;
+
+  idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
+  idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
+
+  idx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  idx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  idx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+
+  val_t const * const avals = mats[ct->dim_perm[0]]->vals;
+  val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
+  val_t * const ovals = mats[MAX_NMODES]->vals;
+
+  val_t * const restrict accumF
+      = (val_t *) thds[omp_get_thread_num()].scratch[0];
+
+  idx_t const nslices = ct->pt[tile_id].nfibs[0];
+  #pragma omp for schedule(dynamic, 16) nowait
+  for(idx_t s=0; s < nslices; ++s) {
+    idx_t const fid = (sids == NULL) ? s : sids[s];
+
+    /* root row */
+    val_t const * const restrict rv = avals + (fid * NFACTORS);
+
+    /* foreach fiber in slice */
+    for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
+      /* first entry of the fiber is used to initialize accumF */
+      idx_t const jjfirst  = fptr[f];
+      val_t const vfirst   = vals[jjfirst];
+      val_t const * const restrict bv = bvals + (inds[jjfirst] * NFACTORS);
+      for(idx_t r=0; r < NFACTORS; ++r) {
+        accumF[r] = vfirst * bv[r];
+      }
+
+      /* foreach nnz in fiber */
+      for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
+        val_t const v = vals[jj];
+        val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
+        for(idx_t r=0; r < NFACTORS; ++r) {
+          accumF[r] += v * bv[r];
+        }
+      }
+
+      /* write to fiber row */
+      val_t * const restrict ov = ovals  + (fids[f] * NFACTORS);
+      omp_set_lock(locks + (fids[f] % NLOCKS));
+      for(idx_t r=0; r < NFACTORS; ++r) {
+        ov[r] += rv[r] * accumF[r];
+      }
+      omp_unset_lock(locks + (fids[f] % NLOCKS));
+    }
+  }
+}
+
 
 
 static void p_csf_mttkrp_internal3(
@@ -471,43 +571,48 @@ static void p_csf_mttkrp_internal3(
   val_t * const ovals = mats[MAX_NMODES]->vals;
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
-  val_t * const restrict accumF
-      = (val_t *) thds[omp_get_thread_num()].scratch[0];
+  if (nfactors == 16) {
+    p_csf_mttkrp_internal3_<16>(ct, tile_id, mats, thds);
+  }
+  else {
+    val_t * const restrict accumF
+        = (val_t *) thds[omp_get_thread_num()].scratch[0];
 
-  idx_t const nslices = ct->pt[tile_id].nfibs[0];
-  #pragma omp for schedule(dynamic, 16) nowait
-  for(idx_t s=0; s < nslices; ++s) {
-    idx_t const fid = (sids == NULL) ? s : sids[s];
+    idx_t const nslices = ct->pt[tile_id].nfibs[0];
+    #pragma omp for schedule(dynamic, 16) nowait
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
 
-    /* root row */
-    val_t const * const restrict rv = avals + (fid * nfactors);
+      /* root row */
+      val_t const * const restrict rv = avals + (fid * nfactors);
 
-    /* foreach fiber in slice */
-    for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
-      /* first entry of the fiber is used to initialize accumF */
-      idx_t const jjfirst  = fptr[f];
-      val_t const vfirst   = vals[jjfirst];
-      val_t const * const restrict bv = bvals + (inds[jjfirst] * nfactors);
-      for(idx_t r=0; r < nfactors; ++r) {
-        accumF[r] = vfirst * bv[r];
-      }
-
-      /* foreach nnz in fiber */
-      for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
-        val_t const v = vals[jj];
-        val_t const * const restrict bv = bvals + (inds[jj] * nfactors);
+      /* foreach fiber in slice */
+      for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
+        /* first entry of the fiber is used to initialize accumF */
+        idx_t const jjfirst  = fptr[f];
+        val_t const vfirst   = vals[jjfirst];
+        val_t const * const restrict bv = bvals + (inds[jjfirst] * nfactors);
         for(idx_t r=0; r < nfactors; ++r) {
-          accumF[r] += v * bv[r];
+          accumF[r] = vfirst * bv[r];
         }
-      }
 
-      /* write to fiber row */
-      val_t * const restrict ov = ovals  + (fids[f] * nfactors);
-      omp_set_lock(locks + (fids[f] % NLOCKS));
-      for(idx_t r=0; r < nfactors; ++r) {
-        ov[r] += rv[r] * accumF[r];
+        /* foreach nnz in fiber */
+        for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
+          val_t const v = vals[jj];
+          val_t const * const restrict bv = bvals + (inds[jj] * nfactors);
+          for(idx_t r=0; r < nfactors; ++r) {
+            accumF[r] += v * bv[r];
+          }
+        }
+
+        /* write to fiber row */
+        val_t * const restrict ov = ovals  + (fids[f] * nfactors);
+        omp_set_lock(locks + (fids[f] % NLOCKS));
+        for(idx_t r=0; r < nfactors; ++r) {
+          ov[r] += rv[r] * accumF[r];
+        }
+        omp_unset_lock(locks + (fids[f] % NLOCKS));
       }
-      omp_unset_lock(locks + (fids[f] % NLOCKS));
     }
   }
 
@@ -521,13 +626,8 @@ static void p_csf_mttkrp_internal3(
     size_t fbytes = ct->storage;
     double gbps = (mbytes + fbytes)/time.seconds/1e9;
 
-    char * fstorage = bytes_str(fbytes);
-    char * mstorage = bytes_str(mbytes);
-
-    printf("       p_csf_mttkrp_internal3 (%0.3fs, %.3f GBps) %ld %ld %s %s\n",
-        time.seconds, gbps, bdim, adim, fstorage, mstorage);
-    free(fstorage);
-    free(mstorage);
+    printf("       p_csf_mttkrp_internal3 (%0.3fs, %.3f GBps)\n",
+        time.seconds, gbps);
   }
 }
 
@@ -1336,7 +1436,7 @@ void mttkrp_csf(
   /* clear output matrix */
   matrix_t * const M = mats[MAX_NMODES];
   M->I = tensors[0].dims[mode];
-  memset(M->vals, 0, M->I * M->J * sizeof(val_t));
+  if (2 == mode) memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
   omp_set_num_threads(opts[SPLATT_OPTION_NTHREADS]);
 
