@@ -20,6 +20,9 @@ typedef enum
   CNV_FIB_SPMAT,  /** Convert to a CSR matrix whose rows are <mode> fibers. */
   CNV_FIB_HGRAPH, /** Convert to a hypergraph whose nodes are <mode> fibers. */
   CNV_NNZ_HGRAPH, /** Convert to a hypergraph whose nodes are nonzeros. */
+  CNV_BINARY,     /** Convert to a binary format. */
+  CNV_SPLATT,     /** Convert to the default format. */
+  CNV_CSF,        /** Convert to a compressed sparse fiber format. */
   CNV_ERROR,
 } splatt_convert_type;
 

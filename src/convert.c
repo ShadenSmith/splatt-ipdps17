@@ -131,6 +131,19 @@ void tt_convert(
   case CNV_FIB_SPMAT:
     p_convert_fib_mat(tt, mode, ofname);
     break;
+  case CNV_BINARY:
+    tt_write_binary(tt, ofname);
+    break;
+  case CNV_SPLATT:
+    tt_write(tt, ofname);
+    break;
+  case CNV_CSF:
+    {
+      double * opts = splatt_default_opts();
+      splatt_csf *csf = splatt_csf_alloc(tt, opts);
+      splatt_csf_write(csf, ofname);
+    }
+    break;
   default:
     fprintf(stderr, "SPLATT ERROR: convert type not implemented.\n");
     exit(1);
