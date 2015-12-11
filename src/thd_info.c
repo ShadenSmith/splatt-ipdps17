@@ -162,7 +162,7 @@ thd_info * thd_init(
   for(idx_t t=0; t < nthreads; ++t) {
     timer_reset(&thds[t].ttime);
     thds[t].nscratch = nscratch;
-    thds[t].scratch = (void **) malloc(nscratch * sizeof(void*));
+    thds[t].scratch = (void **) aligned_alloc(64, nscratch * sizeof(void*));
   }
 
   va_list args;
@@ -170,7 +170,7 @@ thd_info * thd_init(
   for(idx_t s=0; s < nscratch; ++s) {
     idx_t const bytes = va_arg(args, idx_t);
     for(idx_t t=0; t < nthreads; ++t) {
-      thds[t].scratch[s] = (void *) malloc(bytes);
+      thds[t].scratch[s] = (void *) aligned_alloc(64, bytes);
       memset(thds[t].scratch[s], 0, bytes);
     }
   }
