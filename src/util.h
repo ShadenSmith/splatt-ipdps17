@@ -22,6 +22,10 @@
  * PUBLIC FUNCTIONS
  *****************************************************************************/
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define rand_val splatt_rand_val
 /**
 * @brief Generate a random val_t in the range [0, 1].
@@ -90,5 +94,9 @@ idx_t argmax_elem(
 idx_t argmin_elem(
   idx_t const * const arr,
   idx_t const N);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
