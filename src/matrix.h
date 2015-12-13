@@ -180,6 +180,18 @@ matrix_t * mat_alloc(
   idx_t const ncols);
 
 
+#define mat_transpose splatt_mat_transpose
+/**
+* @brief Fill matrix B with transpose(A). Assumes B is already allocated.
+*
+* @param A The matrix to transpose.
+* @param[out] B The transposed matrix.
+*/
+void mat_transpose(
+  matrix_t const * const A,
+  matrix_t * B);
+
+
 #define mat_free splatt_mat_free
 /**
 * @brief Free a matrix allocated with mat_alloc(). This also frees the matrix
