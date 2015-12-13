@@ -112,6 +112,9 @@ add_subdirectory(include)
 # Compile applications
 add_subdirectory(src)
 
+# UNIT TESTS
+add_subdirectory(tests)
+
 # uninstall
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/cmake_uninstall.cmake.in"
