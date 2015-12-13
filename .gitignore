@@ -1,0 +1,27 @@
+
+*.swp
+*.o
+
+# compiled matlab files
+*.mex
+*.mexa64
+
+build/
+
+mode*.mat
+lambda.mat
+core.mat
+
+CMakeCache.txt
+Makefile
+CMakeFiles/
+cmake_install.cmake
+
+tags
+src/tags
+
+a.out
+
+doxygen/html
+doxygen/latex
+doxygen/*.log
