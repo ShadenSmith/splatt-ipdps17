@@ -1330,6 +1330,9 @@ static void p_leaf_decide(
   idx_t const nmodes = tensor->nmodes;
   idx_t const depth = nmodes - 1;
 
+  matrix_t * const M = mats[MAX_NMODES];
+  memset(M->vals, 0, M->I * M->J * sizeof(val_t));
+
   #pragma omp parallel
   {
     timer_start(&thds[omp_get_thread_num()].ttime);
@@ -1379,6 +1382,9 @@ static void p_intl_decide(
 {
   idx_t const nmodes = tensor->nmodes;
   idx_t const depth = csf_mode_depth(mode, tensor->dim_perm, nmodes);
+
+  matrix_t * const M = mats[MAX_NMODES];
+  memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
   #pragma omp parallel
   {
@@ -1436,7 +1442,7 @@ void mttkrp_csf(
   /* clear output matrix */
   matrix_t * const M = mats[MAX_NMODES];
   M->I = tensors[0].dims[mode];
-  if (2 == mode) memset(M->vals, 0, M->I * M->J * sizeof(val_t));
+  //if (2 == mode) memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
   omp_set_num_threads(opts[SPLATT_OPTION_NTHREADS]);
 
