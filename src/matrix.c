@@ -553,7 +553,12 @@ matrix_t * mat_alloc(
   matrix_t * mat = (matrix_t *) malloc(sizeof(matrix_t));
   mat->I = nrows;
   mat->J = ncols;
+#define SPLATT_ALIGN
+#ifdef SPLATT_ALIGN
+  posix_memalign((void **)(&mat->vals), 64, nrows * ncols * sizeof(val_t));
+#else
   mat->vals = (val_t *) malloc(nrows * ncols * sizeof(val_t));
+#endif
   mat->rowmajor = 1;
   return mat;
 }
