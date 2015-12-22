@@ -33,13 +33,13 @@
  *****************************************************************************/
 static double const DEFAULT_TOL = 1e-5;
 
-static idx_t const DEFAULT_NFACTORS = 10;
+static idx_t const DEFAULT_NFACTORS = 16;
 static idx_t const DEFAULT_ITS = 50;
 static idx_t const DEFAULT_MPI_DISTRIBUTION = MAX_NMODES+1;
 
 #define SPLATT_MPI_FINE (MAX_NMODES + 1)
 
-static int const DEFAULT_WRITE = 1;
+static int const DEFAULT_WRITE = 0;
 static int const DEFAULT_TILE = 0;
 
 #endif
