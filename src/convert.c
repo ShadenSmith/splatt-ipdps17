@@ -141,7 +141,7 @@ void tt_convert(
     {
       double * opts = splatt_default_opts();
       splatt_csf *csf = splatt_csf_alloc(tt, opts);
-      splatt_csf_write(csf, ofname);
+      splatt_csf_write(csf, ofname, csf_get_ncopies(opts, csf->nmodes));
     }
     break;
   default:

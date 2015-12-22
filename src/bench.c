@@ -168,7 +168,7 @@ void bench_csf(
   printf("CSF-STORAGE: %s\n\n", bstr);
   free(bstr);
 
-  stats_csf(cs);
+  stats_csf(cs, csf_get_ncopies(cpd_opts, cs->nmodes));
   printf("\n");
 
   timer_start(&timers[TIMER_MISC]);

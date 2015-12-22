@@ -55,12 +55,14 @@ void splatt_csf_read_file(
 void
 splatt_csf_write(
   splatt_csf const * const ct,
-  char const * const ofname);
+  char const * const ofname,
+  int ncopies);
 
 void
 splatt_csf_read(
   splatt_csf *ct,
-  char const * const ifname);
+  char const * const ifname,
+  int ncopies);
 
 #define csf_alloc_mode splatt_csf_alloc_mode
 /**
@@ -181,5 +183,7 @@ static inline idx_t csf_mode_depth(
   assert(1 == 2);
   return MAX_NMODES;
 }
+
+int csf_get_ncopies(double *opts, int nmodes);
 
 #endif
