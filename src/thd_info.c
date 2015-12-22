@@ -170,12 +170,7 @@ thd_info * thd_init(
   for(idx_t s=0; s < nscratch; ++s) {
     idx_t const bytes = va_arg(args, idx_t);
     for(idx_t t=0; t < nthreads; ++t) {
-#define SPLATT_ALIGN
-#ifdef SPLATT_ALIGN
       posix_memalign(&thds[t].scratch[s], 64, bytes);
-#else
-      thds[t].scratch[s] = (void *) malloc(bytes);
-#endif
       memset(thds[t].scratch[s], 0, bytes);
     }
   }
