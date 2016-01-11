@@ -7,6 +7,7 @@
 #include "matrix.h"
 #include "util.h"
 #include "timer.h"
+#include <mkl.h>
 
 #include <math.h>
 #include <omp.h>
@@ -105,11 +106,18 @@ static void p_mat_maxnorm(
       }
     }
 
+#pragma omp barrier
+
     /* do reduction on partial maxes */
-    thd_reduce(thds, 0, J, REDUCE_MAX);
+    //thd_reduce(thds, 0, J, REDUCE_MAX);
 
     #pragma omp master
     {
+      for(idx_t i=1; i < omp_get_num_threads(); ++i) {
+        for(idx_t j=0; j < J; ++j) {
+          mylambda[j] = SS_MAX(mylambda[j], ((val_t *)thds[i].scratch[0])[j]);
+        }
+      }
 #ifdef SPLATT_USE_MPI
       /* now do an MPI reduction to get the global lambda */
       timer_start(&timers[TIMER_MPI_NORM]);
@@ -121,18 +129,18 @@ static void p_mat_maxnorm(
       MPI_Allreduce(mylambda, lambda, J, SPLATT_MPI_VAL, MPI_MAX, rinfo->comm_3d);
       timer_stop(&timers[TIMER_MPI_COMM]);
       timer_stop(&timers[TIMER_MPI_NORM]);
-#else
-      memcpy(lambda, mylambda, J * sizeof(val_t));
-#endif
 
+      for(idx_t j=0; j < J; ++j) {
+        lambda[j] = SS_MAX(lambda[j], 1.);
+      }
+#else
+      for(idx_t j=0; j < J; ++j) {
+        lambda[j] = SS_MAX(mylambda[j], 1.);
+      }
+#endif
     }
 
     #pragma omp barrier
-
-    #pragma omp for schedule(static)
-    for(idx_t j=0; j < J; ++j) {
-      lambda[j] = SS_MAX(lambda[j], 1.);
-    }
 
     /* do the normalization */
     #pragma omp for schedule(static)
@@ -358,6 +366,10 @@ void mat_aTa(
   idx_t const nthreads)
 {
   timer_start(&timers[TIMER_ATA]);
+#ifdef SPLATT_USE_MKL
+  cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, A->J, A->J, A->I, 1, A->vals, A->J, A->vals, A->J, 1, ret->vals, ret->J);
+  // can use dsyrk?
+#else
   /* check matrix dimensions */
   assert(ret->I == ret->J);
   assert(ret->I == A->J);
@@ -415,6 +427,7 @@ void mat_aTa(
 #else
   memcpy(ret->vals, (val_t *) thds[0].scratch[0], F * F * sizeof(val_t));
 #endif
+#endif
 
   timer_stop(&timers[TIMER_ATA]);
 }
@@ -425,6 +438,11 @@ void mat_matmul(
   matrix_t  * const C)
 {
   timer_start(&timers[TIMER_MATMUL]);
+
+#define SPLATT_USE_MKL
+#ifdef SPLATT_USE_MKL
+  cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, A->I, B->J, A->J, 1, A->vals, A->J, B->vals, B->J, 1, C->vals, C->J);
+#else
 
   /* check dimensions */
   assert(A->J == B->I);
@@ -458,6 +476,7 @@ void mat_matmul(
       }
     }
   }
+#endif
 
   timer_stop(&timers[TIMER_MATMUL]);
 }
@@ -553,7 +572,7 @@ matrix_t * mat_alloc(
   matrix_t * mat = (matrix_t *) malloc(sizeof(matrix_t));
   mat->I = nrows;
   mat->J = ncols;
-  mat->vals = (val_t *) malloc(nrows * ncols * sizeof(val_t));
+  posix_memalign((void **)(&mat->vals), 64, nrows * ncols * sizeof(val_t));
   mat->rowmajor = 1;
   return mat;
 }
