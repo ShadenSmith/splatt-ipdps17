@@ -7,23 +7,72 @@
 #include "thd_info.h"
 #include "tile.h"
 #include "util.h"
+#include <limits.h>
 #include <omp.h>
+#ifdef __INTEL_COMPILER
+#include <immintrin.h>
+//#define SPLATT_INTRINSIC // use intrinsic
+#endif
+#include <unistd.h>
+#define SPLATT_SIM_CACHE
+#ifdef SPLATT_SIM_CACHE
+#include "gathertool.h"
+#endif
 
+#define SPLATT_NFACTOR_COMPILE_CONSTANT
+//#define SPLATT_RTM // use restricted transactional memory
+//#define SPLATT_CAS
 
 #define NLOCKS 1024
-static omp_lock_t locks[NLOCKS];
 static int locks_initialized = 0;
+
+//#define SPLATT_ATOMIC_CACHE
+#ifdef SPLATT_ATOMIC_CACHE
+#define NBUCKETS 65536
+#endif
+
+//#define SPLATT_NO_LOCK
+//#define SPLATT_MY_TTAS_LOCK
+#ifdef SPLATT_MY_TTAS_LOCK
+static volatile int locks[NLOCKS*16];
+#elif !defined(SPLATT_NO_LOCK)
+static omp_lock_t locks[NLOCKS*16];
+#endif
 
 static void p_init_locks()
 {
   if (!locks_initialized) {
     for(int i=0; i < NLOCKS; ++i) {
-      omp_init_lock(locks+i);
+#ifdef SPLATT_MY_TTAS_LOCK
+      locks[i*16] = 0;
+#elif !defined(SPLATT_NO_LOCK)
+      omp_init_lock(locks+i*16);
+#endif
     }
     locks_initialized = 1;
   }
 }
 
+static inline void splatt_set_lock(int id)
+{
+  int i = (id%NLOCKS)*16;
+#ifdef SPLATT_MY_TTAS_LOCK
+  //while (0 != locks[i] || 0 != __sync_lock_test_and_set(locks + i, 0xff)); // TTAS
+  while (0 != __sync_lock_test_and_set(locks + i, 0xff)) { _mm_pause(); }; // TAS with backoff
+#elif !defined(SPLATT_NO_LOCK)
+  omp_set_lock(locks + i);
+#endif
+}
+
+static inline void splatt_unset_lock(int id)
+{
+  int i = (id%NLOCKS)*16;
+#ifdef SPLATT_MY_TTAS_LOCK
+  __sync_lock_release(locks + i);
+#elif !defined(SPLATT_NO_LOCK)
+  omp_unset_lock(locks + i);
+#endif
+}
 
 /******************************************************************************
  * API FUNCTIONS
@@ -129,11 +178,11 @@ static inline void p_csf_process_fiber_lock(
   for(idx_t jj=start; jj < end; ++jj) {
     val_t * const restrict leafrow = leafmat + (inds[jj] * nfactors);
     val_t const v = vals[jj];
-    omp_set_lock(locks + (inds[jj] % NLOCKS));
+    splatt_set_lock(inds[jj]);
     for(idx_t f=0; f < nfactors; ++f) {
       leafrow[f] += v * accumbuf[f];
     }
-    omp_unset_lock(locks + (inds[jj] % NLOCKS));
+    splatt_unset_lock(inds[jj]);
   }
 }
 
@@ -300,6 +349,11 @@ static void p_csf_mttkrp_root_tiled3(
   }
 }
 
+#define SPLATT_MEASURE_LOAD_BALANCE
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+double barrierTimes[1024];
+#endif
+
 template<int NFACTORS>
 static void p_csf_mttkrp_root3_(
   splatt_csf const * const ct,
@@ -326,6 +380,24 @@ static void p_csf_mttkrp_root3_(
       = (val_t *) thds[omp_get_thread_num()].scratch[2];
 
   assert(sids == NULL);
+
+#ifdef SPLATT_SIM_CACHE
+  static int simulation_cnt = 0;
+#pragma omp barrier
+#pragma omp master
+  if (simulation_cnt < 2) {
+    simulateCache = true;
+    for (int i = 0; i < omp_get_num_threads(); ++i) {
+      tidsToSimulate.push_back(i);
+    }
+    RegisterRegion((void *)avals, (void *)(avals + ct->dims[ct->dim_perm[1]]*NFACTORS), "avals");
+    RegisterRegion((void *)bvals, (void *)(bvals + ct->dims[ct->dim_perm[2]]*NFACTORS), "bvals");
+    RegisterRegion((void *)vals, (void *)(vals + ct->nnz), "vals");
+    RegisterRegion((void *)inds, (void *)(inds + ct->nnz), "inds");
+    Reset();
+  }
+#pragma omp barrier
+#endif
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
   int nthreads = omp_get_num_threads();
@@ -357,15 +429,27 @@ static void p_csf_mttkrp_root3_(
   }
   int s_end = tid == nthreads - 1 ? nslices : first;
 
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+#pragma omp barrier
+  double tBegin = omp_get_wtime();
+#endif
+
   //printf("[%d] %d-%d %ld\n", tid, s_begin, s_end, fptr[sptr[s_end]] - fptr[sptr[s_begin]]);
 
   //#pragma omp for schedule(dynamic, 16) nowait
   for(idx_t s=s_begin; s < s_end; ++s) {
     idx_t const fid = s;
 
+#ifdef SPLATT_INTRINSIC
+    __m256d accumO_v1 = _mm256_setzero_pd();
+    __m256d accumO_v2 = _mm256_setzero_pd();
+    __m256d accumO_v3 = _mm256_setzero_pd();
+    __m256d accumO_v4 = _mm256_setzero_pd();
+#else
     for(idx_t r=0; r < NFACTORS; ++r) {
       accumO[r] = 0;
     }
+#endif
 
     /* foreach fiber in slice */
     for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
@@ -373,16 +457,53 @@ static void p_csf_mttkrp_root3_(
       idx_t const jjfirst  = fptr[f];
       val_t const vfirst   = vals[jjfirst];
       val_t const * const restrict bv = bvals + (inds[jjfirst] * NFACTORS);
+#ifdef SPLATT_SIM_CACHE
+      Load(vals + jjfirst);
+      Load(inds + jjfirst);
+#endif
+#ifdef SPLATT_INTRINSIC
+      __m256d accumF_v1 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv));
+      __m256d accumF_v2 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 4));
+      __m256d accumF_v3 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 8));
+      __m256d accumF_v4 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 12));
+
+      /* foreach nnz in fiber */
+      for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
+        val_t const v = vals[jj];
+        val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
+        accumF_v1 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv), accumF_v1);
+        accumF_v2 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 4), accumF_v2);
+        accumF_v3 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 8), accumF_v3);
+        accumF_v4 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 12), accumF_v4);
+      }
+
+      /* scale inner products by row of A and update to M */
+      val_t const * const restrict av = avals  + (fids[f] * NFACTORS);
+      accumO_v1 = _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(av), accumO_v1);
+      accumO_v2 = _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(av + 4), accumO_v2);
+      accumO_v3 = _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(av + 8), accumO_v3);
+      accumO_v4 = _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(av + 12), accumO_v4);
+#else
       for(idx_t r=0; r < NFACTORS; ++r) {
         accumF[r] = vfirst * bv[r];
+#ifdef SPLATT_SIM_CACHE
+        Load(bv + r);
+#endif
       }
 
       /* foreach nnz in fiber */
       for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
         val_t const v = vals[jj];
         val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
+#ifdef SPLATT_SIM_CACHE
+        Load(vals + jj);
+        Load(inds + jj);
+#endif
         for(idx_t r=0; r < NFACTORS; ++r) {
           accumF[r] += v * bv[r];
+#ifdef SPLATT_SIM_CACHE
+          Load(bv + r);
+#endif
         }
       }
 
@@ -390,15 +511,57 @@ static void p_csf_mttkrp_root3_(
       val_t const * const restrict av = avals  + (fids[f] * NFACTORS);
       for(idx_t r=0; r < NFACTORS; ++r) {
         accumO[r] += accumF[r] * av[r];
+#ifdef SPLATT_SIM_CACHE
+        Load(av + r);
+#endif
       }
+#endif // SPLATT_INTRINSIC
     }
 
     val_t * const restrict mv = ovals + (fid * NFACTORS);
+#ifdef SPLATT_INTRINSIC
+    _mm256_stream_pd(mv, accumO_v1);
+    _mm256_stream_pd(mv + 4, accumO_v2);
+    _mm256_stream_pd(mv + 8, accumO_v3);
+    _mm256_stream_pd(mv + 12, accumO_v4);
+#else
 #pragma vector nontemporal(mv)
     for(idx_t r=0; r < NFACTORS; ++r) {
       mv[r] = accumO[r];
+#ifdef SPLATT_SIM_CACHE
+      Load(mv + r);
+#endif
     }
+#endif
   }
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+  double t = omp_get_wtime();
+#pragma omp barrier
+  barrierTimes[tid] = omp_get_wtime() - t;
+
+#pragma omp barrier
+#pragma omp master
+  {
+    double tEnd = omp_get_wtime();
+    double barrierTimeSum = 0;
+    for (int i = 0; i < nthreads; ++i) {
+      barrierTimeSum += barrierTimes[i];
+    }
+    printf("%f load imbalance = %f\n", tEnd - tBegin, barrierTimeSum/(tEnd - tBegin)/nthreads);
+  }
+#endif // SPLATT_MEASURE_LOAD_BALANCE
+#ifdef SPLATT_SIM_CACHE
+#pragma omp barrier
+#pragma omp master
+  if (simulation_cnt < 2) {
+    Analyze();
+    simulateCache = false;
+    ++simulation_cnt;
+    ClearRegions();
+  }
+#pragma omp barrier
+#endif
 }
 
 static void p_csf_mttkrp_root3(
@@ -426,10 +589,13 @@ static void p_csf_mttkrp_root3(
   val_t * const ovals = mats[MAX_NMODES]->vals;
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
+#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nfactors == 16) {
     p_csf_mttkrp_root3_<16>(ct, tile_id, mats, thds);
   }
-  else {
+  else
+#endif
+  {
     val_t * const restrict accumF
         = (val_t *) thds[omp_get_thread_num()].scratch[0];
 
@@ -483,6 +649,13 @@ static void p_csf_mttkrp_root3(
   }
 }
 
+#ifdef SPLATT_ATOMIC_CACHE
+int hit_cnts[256];
+int miss_cnts[256];
+int global_atomic_cache_keys[32*NBUCKETS];
+__declspec(aligned(64)) val_t global_atomic_cache_values[32*NBUCKETS*16];
+#endif
+
 template<int NFACTORS>
 static void p_csf_mttkrp_internal3_(
   splatt_csf const * const ct,
@@ -507,8 +680,52 @@ static void p_csf_mttkrp_internal3_(
       = (val_t *) thds[omp_get_thread_num()].scratch[0];
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
-  #pragma omp for schedule(dynamic, 16) nowait
-  for(idx_t s=0; s < nslices; ++s) {
+
+  int nthreads = omp_get_num_threads();
+  int tid = omp_get_thread_num();
+
+#ifdef SPLATT_ATOMIC_CACHE
+  int *atomic_cache_keys = global_atomic_cache_keys + tid*NBUCKETS;
+  val_t *atomic_cache_values = global_atomic_cache_values + tid*NBUCKETS*NFACTORS;
+  for (int i = 0; i < NBUCKETS; ++i) {
+    atomic_cache_keys[i] = -1;
+  }
+  int hit_cnt = 0, miss_cnt = 0;
+#endif
+
+  int nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
+  int count = nslices;
+  int first = 0;
+  int val = nnz_per_thread*tid;
+  while (count > 0) {
+    int it = first; int step = count/2; it += step;
+    if (fptr[sptr[it]] < val) {
+      first = it + 1;
+      count -= step + 1;
+    }
+    else count = step;
+  }
+  int s_begin = tid == 0 ? 0 : first;
+
+  count = nslices - first;
+  val += nnz_per_thread;
+  while (count > 0) {
+    int it = first; int step = count/2; it += step;
+    if (fptr[sptr[it]] < val) {
+      first = it + 1;
+      count -= step + 1;
+    }
+    else count = step;
+  }
+  int s_end = tid == nthreads - 1 ? nslices : first;
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+#pragma omp barrier
+  double tBegin = omp_get_wtime();
+#endif
+
+  //#pragma omp for schedule(dynamic, 16) nowait
+  for(idx_t s=s_begin; s < s_end; ++s) {
     idx_t const fid = (sids == NULL) ? s : sids[s];
 
     /* root row */
@@ -520,6 +737,78 @@ static void p_csf_mttkrp_internal3_(
       idx_t const jjfirst  = fptr[f];
       val_t const vfirst   = vals[jjfirst];
       val_t const * const restrict bv = bvals + (inds[jjfirst] * NFACTORS);
+#ifdef SPLATT_INTRINSIC
+      __m256d accumF_v1 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv));
+      __m256d accumF_v2 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 4));
+      __m256d accumF_v3 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 8));
+      __m256d accumF_v4 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 12));
+
+      /* foreach nnz in fiber */
+      for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
+        val_t const v = vals[jj];
+        val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
+        accumF_v1 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv), accumF_v1);
+        accumF_v2 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 4), accumF_v2);
+        accumF_v3 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 8), accumF_v3);
+        accumF_v4 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 12), accumF_v4);
+      }
+
+      /* scale inner products by row of A and update to M */
+      idx_t oid = fids[f];
+      val_t * const restrict ov = ovals  + (oid * NFACTORS);
+#ifdef SPLATT_RTM
+      if (_xbegin() == _XBEGIN_STARTED) {
+        _mm256_store_pd(ov, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(ov)));
+        _mm256_store_pd(ov + 4, _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(rv + 4), _mm256_load_pd(ov + 4)));
+        _mm256_store_pd(ov + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(ov + 8)));
+        _mm256_store_pd(ov + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(ov + 12)));
+        _xend();
+      }
+      else
+#endif
+      {
+#ifdef SPLATT_ATOMIC_CACHE
+        int bucket_id = oid%NBUCKETS;
+        val_t *bucket_v = atomic_cache_values + bucket_id*NFACTORS;
+        int key = atomic_cache_keys[bucket_id];
+
+        if (key == oid) {
+          _mm256_store_pd(bucket_v, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(bucket_v)));
+          _mm256_store_pd(bucket_v + 4, _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(rv + 4), _mm256_load_pd(bucket_v + 4)));
+          _mm256_store_pd(bucket_v + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(bucket_v + 8)));
+          _mm256_store_pd(bucket_v + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(bucket_v + 12)));
+
+          //++hit_cnt;
+        }
+        else {
+          if (key != -1) {
+            val_t *ov2 = ovals + (key * NFACTORS);
+            splatt_set_lock(key);
+            _mm256_store_pd(ov2, _mm256_add_pd(_mm256_load_pd(ov2), _mm256_load_pd(bucket_v)));
+            _mm256_store_pd(ov2 + 4, _mm256_add_pd(_mm256_load_pd(ov2 + 4), _mm256_load_pd(bucket_v + 4)));
+            _mm256_store_pd(ov2 + 8, _mm256_add_pd(_mm256_load_pd(ov2 + 8), _mm256_load_pd(bucket_v + 8)));
+            _mm256_store_pd(ov2 + 12, _mm256_add_pd(_mm256_load_pd(ov2 + 12), _mm256_load_pd(bucket_v + 12)));
+            splatt_unset_lock(key);
+          }
+
+          _mm256_store_pd(bucket_v, _mm256_mul_pd(accumF_v1, _mm256_load_pd(rv)));
+          _mm256_store_pd(bucket_v + 4, _mm256_mul_pd(accumF_v2, _mm256_load_pd(rv + 4)));
+          _mm256_store_pd(bucket_v + 8, _mm256_mul_pd(accumF_v3, _mm256_load_pd(rv + 8)));
+          _mm256_store_pd(bucket_v + 12, _mm256_mul_pd(accumF_v4, _mm256_load_pd(rv + 12)));
+          atomic_cache_keys[bucket_id] = oid;
+
+          //++miss_cnt;
+        }
+#else
+        splatt_set_lock(oid);
+        _mm256_store_pd(ov, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(ov)));
+        _mm256_store_pd(ov + 4, _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(rv + 4), _mm256_load_pd(ov + 4)));
+        _mm256_store_pd(ov + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(ov + 8)));
+        _mm256_store_pd(ov + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(ov + 12)));
+        splatt_unset_lock(oid);
+#endif
+      }
+#else // SPLATT_INTRINSIC
       for(idx_t r=0; r < NFACTORS; ++r) {
         accumF[r] = vfirst * bv[r];
       }
@@ -535,16 +824,86 @@ static void p_csf_mttkrp_internal3_(
 
       /* write to fiber row */
       val_t * const restrict ov = ovals  + (fids[f] * NFACTORS);
-      omp_set_lock(locks + (fids[f] % NLOCKS));
-      for(idx_t r=0; r < NFACTORS; ++r) {
-        ov[r] += rv[r] * accumF[r];
+#ifdef SPLATT_RTM
+      if (_xbegin() == _XBEGIN_STARTED) {
+        for(idx_t r=0; r < NFACTORS; ++r) {
+          ov[r] += rv[r] * accumF[r];
+        }
+        _xend();
       }
-      omp_unset_lock(locks + (fids[f] % NLOCKS));
+      else
+#endif
+      {
+#ifdef SPLATT_CAS
+        for(idx_t r=0; r < NFACTORS; ++r) {
+          double old_ov, new_ov;
+          do {
+            old_ov = ov[r];
+            new_ov = old_ov + rv[r]*accumF[r];
+          } while (!__sync_bool_compare_and_swap((long long *)(ov + r), *((long long *)(&old_ov)), *((long long *)(&new_ov))));
+        }
+#else
+        splatt_set_lock(fids[f]);
+        for(idx_t r=0; r < NFACTORS; ++r) {
+          ov[r] += rv[r] * accumF[r];
+        }
+        splatt_unset_lock(fids[f]);
+#endif
+      }
+#endif // SPLATT_INTRINSIC
     }
   }
+
+#ifdef SPLATT_ATOMIC_CACHE
+  for (int bucket_id = 0; bucket_id < NBUCKETS; ++bucket_id) {
+    int key = atomic_cache_keys[bucket_id];
+    if (key != -1) {
+      val_t * const restrict ov = ovals  + (key * NFACTORS);
+      val_t *bucket_v = atomic_cache_values + bucket_id*NFACTORS;
+
+      splatt_set_lock(key);
+      _mm256_store_pd(ov, _mm256_add_pd(_mm256_load_pd(ov), _mm256_load_pd(bucket_v)));
+      _mm256_store_pd(ov + 4, _mm256_add_pd(_mm256_load_pd(ov + 4), _mm256_load_pd(bucket_v + 4)));
+      _mm256_store_pd(ov + 8, _mm256_add_pd(_mm256_load_pd(ov + 8), _mm256_load_pd(bucket_v + 8)));
+      _mm256_store_pd(ov + 12, _mm256_add_pd(_mm256_load_pd(ov + 12), _mm256_load_pd(bucket_v + 12)));
+      splatt_unset_lock(key);
+    }
+  }
+#endif
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+  double t = omp_get_wtime();
+#pragma omp barrier
+  barrierTimes[tid] = omp_get_wtime() - t;
+
+#pragma omp barrier
+#pragma omp master
+  {
+    double tEnd = omp_get_wtime();
+    double barrierTimeSum = 0;
+    for (int i = 0; i < nthreads; ++i) {
+      barrierTimeSum += barrierTimes[i];
+    }
+    printf("%f load imbalance = %f\n", tEnd - tBegin, barrierTimeSum/(tEnd - tBegin)/nthreads);
+  }
+#endif // SPLATT_MEASURE_LOAD_BALANCE
+
+#ifdef SPLATT_ATOMIC_CACHE
+  hit_cnts[tid] = hit_cnt;
+  miss_cnts[tid] = miss_cnt;
+#pragma omp barrier
+#pragma omp master
+  {
+    hit_cnt = 0;
+    miss_cnt = 0;
+    for (int i = 0; i < nthreads; ++i) {
+      hit_cnt += hit_cnts[i];
+      miss_cnt += miss_cnts[i];
+    }
+    printf("hit = %d miss = %d hit-rate = %f\n", hit_cnt, miss_cnt, (double)hit_cnt/(hit_cnt + miss_cnt));
+  }
+#endif
 }
-
-
 
 static void p_csf_mttkrp_internal3(
   splatt_csf const * const ct,
@@ -571,10 +930,13 @@ static void p_csf_mttkrp_internal3(
   val_t * const ovals = mats[MAX_NMODES]->vals;
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
+#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nfactors == 16) {
     p_csf_mttkrp_internal3_<16>(ct, tile_id, mats, thds);
   }
-  else {
+  else
+#endif
+  {
     val_t * const restrict accumF
         = (val_t *) thds[omp_get_thread_num()].scratch[0];
 
@@ -607,11 +969,11 @@ static void p_csf_mttkrp_internal3(
 
         /* write to fiber row */
         val_t * const restrict ov = ovals  + (fids[f] * nfactors);
-        omp_set_lock(locks + (fids[f] % NLOCKS));
+        splatt_set_lock(fids[f]);
         for(idx_t r=0; r < nfactors; ++r) {
           ov[r] += rv[r] * accumF[r];
         }
-        omp_unset_lock(locks + (fids[f] % NLOCKS));
+        splatt_unset_lock(fids[f]);
       }
     }
   }
@@ -631,13 +993,174 @@ static void p_csf_mttkrp_internal3(
   }
 }
 
-
-static void p_csf_mttkrp_leaf3(
+template<int NFACTORS>
+static void p_csf_mttkrp_leaf3_(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
   thd_info * const thds)
 {
+  val_t const * const vals = ct->pt[tile_id].vals;
+
+  idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
+  idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
+
+  idx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  idx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  idx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+
+  val_t const * const avals = mats[ct->dim_perm[0]]->vals;
+  val_t const * const bvals = mats[ct->dim_perm[1]]->vals;
+  val_t * const ovals = mats[MAX_NMODES]->vals;
+
+  val_t * const restrict accumF
+      = (val_t *) thds[omp_get_thread_num()].scratch[0];
+
+  idx_t const nslices = ct->pt[tile_id].nfibs[0];
+  int nthreads = omp_get_num_threads();
+  int tid = omp_get_thread_num();
+
+  int nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
+  int count = nslices;
+  int first = 0;
+  int val = nnz_per_thread*tid;
+  while (count > 0) {
+    int it = first; int step = count/2; it += step;
+    if (fptr[sptr[it]] < val) {
+      first = it + 1;
+      count -= step + 1;
+    }
+    else count = step;
+  }
+  int s_begin = tid == 0 ? 0 : first;
+
+  count = nslices - first;
+  val += nnz_per_thread;
+  while (count > 0) {
+    int it = first; int step = count/2; it += step;
+    if (fptr[sptr[it]] < val) {
+      first = it + 1;
+      count -= step + 1;
+    }
+    else count = step;
+  }
+  int s_end = tid == nthreads - 1 ? nslices : first;
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+#pragma omp barrier
+  double tBegin = omp_get_wtime();
+#endif
+
+  //#pragma omp for schedule(dynamic, 16) nowait
+  for(idx_t s=s_begin; s < s_end; ++s) {
+    idx_t const fid = s;
+
+    /* root row */
+    val_t const * const restrict rv = avals + (fid * NFACTORS);
+
+    /* foreach fiber in slice */
+    for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
+      /* fill fiber with hada */
+      val_t const * const restrict av = bvals  + (fids[f] * NFACTORS);
+#ifdef SPLATT_INTRINSIC
+      __m256d accumF_v1 = _mm256_mul_pd(_mm256_load_pd(rv), _mm256_load_pd(av));
+      __m256d accumF_v2 = _mm256_mul_pd(_mm256_load_pd(rv + 4), _mm256_load_pd(av + 4));
+      __m256d accumF_v3 = _mm256_mul_pd(_mm256_load_pd(rv + 8), _mm256_load_pd(av + 8));
+      __m256d accumF_v4 = _mm256_mul_pd(_mm256_load_pd(rv + 12), _mm256_load_pd(av + 12));
+
+      /* foreach nnz in fiber, scale with hada and write to ovals */
+      for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
+        val_t const v = vals[jj];
+        val_t * const restrict ov = ovals + (inds[jj] * NFACTORS);
+#ifdef SPLATT_RTM
+        if (_xbegin() == _XBEGIN_STARTED) {
+          _mm256_store_pd(ov, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v1, _mm256_load_pd(ov)));
+          _mm256_store_pd(ov + 4, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v2, _mm256_load_pd(ov + 4)));
+          _mm256_store_pd(ov + 8, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v3, _mm256_load_pd(ov + 8)));
+          _mm256_store_pd(ov + 12, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v4, _mm256_load_pd(ov + 12)));
+          _xend();
+        }
+        else
+#endif
+        {
+          splatt_set_lock(inds[jj]);
+          _mm256_store_pd(ov, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v1, _mm256_load_pd(ov)));
+          _mm256_store_pd(ov + 4, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v2, _mm256_load_pd(ov + 4)));
+          _mm256_store_pd(ov + 8, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v3, _mm256_load_pd(ov + 8)));
+          _mm256_store_pd(ov + 12, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v4, _mm256_load_pd(ov + 12)));
+          splatt_unset_lock(inds[jj]);
+        }
+      }
+
+#else // SPLATT_INTRINSIC
+      for(idx_t r=0; r < NFACTORS; ++r) {
+        accumF[r] = rv[r] * av[r];
+      }
+
+      /* foreach nnz in fiber, scale with hada and write to ovals */
+      for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
+        val_t const v = vals[jj];
+        val_t * const restrict ov = ovals + (inds[jj] * NFACTORS);
+#ifdef SPLATT_RTM
+        if (_xbegin() == _XBEGIN_STARTED) {
+          for(idx_t r=0; r < NFACTORS; ++r) {
+            ov[r] += v * accumF[r];
+          }
+          _xend();
+        }
+        else
+#endif
+        {
+#ifdef SPLATT_CAS
+          for(idx_t r=0; r < NFACTORS; ++r) {
+            double old_ov, new_ov;
+            do {
+              old_ov = ov[r];
+              new_ov = old_ov + v*accumF[r];
+            } while (!__sync_bool_compare_and_swap((long long *)(ov + r), *((long long *)(&old_ov)), *((long long *)(&new_ov))));
+          }
+#else
+          splatt_set_lock(inds[jj]);
+          for(idx_t r=0; r < NFACTORS; ++r) {
+            ov[r] += v * accumF[r];
+          }
+          splatt_unset_lock(inds[jj]);
+#endif
+        }
+      }
+#endif // SPLATT_INTRINSIC
+    }
+  }
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+  double t = omp_get_wtime();
+#pragma omp barrier
+  barrierTimes[tid] = omp_get_wtime() - t;
+
+#pragma omp barrier
+#pragma omp master
+  {
+    double tEnd = omp_get_wtime();
+    double barrierTimeSum = 0;
+    for (int i = 0; i < nthreads; ++i) {
+      barrierTimeSum += barrierTimes[i];
+    }
+    printf("%f load imbalance = %f\n", tEnd - tBegin, barrierTimeSum/(tEnd - tBegin)/nthreads);
+  }
+#endif // SPLATT_MEASURE_LOAD_BALANCE
+}
+
+
+static void p_csf_mttkrp_leaf3(
+  splatt_csf const * const ct,
+  idx_t const tile_id,
+  matrix_t ** mats,
+  thd_info * const thds,
+  double const * const opts)
+{
+  sp_timer_t time;
+  timer_fstart(&time);
+
   assert(ct->nmodes == 3);
   val_t const * const vals = ct->pt[tile_id].vals;
 
@@ -653,36 +1176,58 @@ static void p_csf_mttkrp_leaf3(
   val_t * const ovals = mats[MAX_NMODES]->vals;
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
-  val_t * const restrict accumF
-      = (val_t *) thds[omp_get_thread_num()].scratch[0];
+#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
+  if (nfactors == 16) {
+    p_csf_mttkrp_leaf3_<16>(ct, tile_id, mats, thds);
+  }
+  else
+#endif
+  {
+    val_t * const restrict accumF
+        = (val_t *) thds[omp_get_thread_num()].scratch[0];
 
-  idx_t const nslices = ct->pt[tile_id].nfibs[0];
-  #pragma omp for schedule(dynamic, 16) nowait
-  for(idx_t s=0; s < nslices; ++s) {
-    idx_t const fid = (sids == NULL) ? s : sids[s];
+    idx_t const nslices = ct->pt[tile_id].nfibs[0];
+    #pragma omp for schedule(dynamic, 16) nowait
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
 
-    /* root row */
-    val_t const * const restrict rv = avals + (fid * nfactors);
+      /* root row */
+      val_t const * const restrict rv = avals + (fid * nfactors);
 
-    /* foreach fiber in slice */
-    for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
-      /* fill fiber with hada */
-      val_t const * const restrict av = bvals  + (fids[f] * nfactors);
-      for(idx_t r=0; r < nfactors; ++r) {
-        accumF[r] = rv[r] * av[r];
-      }
-
-      /* foreach nnz in fiber, scale with hada and write to ovals */
-      for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
-        val_t const v = vals[jj];
-        val_t * const restrict ov = ovals + (inds[jj] * nfactors);
-        omp_set_lock(locks + (inds[jj] % NLOCKS));
+      /* foreach fiber in slice */
+      for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
+        /* fill fiber with hada */
+        val_t const * const restrict av = bvals  + (fids[f] * nfactors);
         for(idx_t r=0; r < nfactors; ++r) {
-          ov[r] += v * accumF[r];
+          accumF[r] = rv[r] * av[r];
         }
-        omp_unset_lock(locks + (inds[jj] % NLOCKS));
+
+        /* foreach nnz in fiber, scale with hada and write to ovals */
+        for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
+          val_t const v = vals[jj];
+          val_t * const restrict ov = ovals + (inds[jj] * nfactors);
+          splatt_set_lock(inds[jj]);
+          for(idx_t r=0; r < nfactors; ++r) {
+            ov[r] += v * accumF[r];
+          }
+          splatt_unset_lock(inds[jj]);
+        }
       }
     }
+  }
+
+  timer_stop(&time);
+  if (0 == omp_get_thread_num() && 
+      opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
+
+    idx_t adim = ct->dims[ct->dim_perm[0]];
+    idx_t bdim = ct->dims[ct->dim_perm[1]];
+    size_t mbytes = (bdim + adim) * nfactors * sizeof(val_t);
+    size_t fbytes = ct->storage;
+    double gbps = (mbytes + fbytes)/time.seconds/1e9;
+
+    printf("       p_csf_mttkrp_leaf3 (%0.3fs, %.3f GBps)\n",
+        time.seconds, gbps);
   }
 }
 
@@ -950,7 +1495,8 @@ static void p_csf_mttkrp_leaf(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
-  thd_info * const thds)
+  thd_info * const thds,
+  double const * const opts)
 {
   /* extract tensor structures */
   val_t const * const vals = ct->pt[tile_id].vals;
@@ -960,7 +1506,7 @@ static void p_csf_mttkrp_leaf(
     return;
   }
   if(nmodes == 3) {
-    p_csf_mttkrp_leaf3(ct, tile_id, mats, thds);
+    p_csf_mttkrp_leaf3(ct, tile_id, mats, thds, opts);
     return;
   }
 
@@ -1256,9 +1802,9 @@ static void p_csf_mttkrp_internal(
           fp, fids, vals, mvals, nmodes, nfactors);
 
       val_t * const restrict outbuf = ovals + (noderow * nfactors);
-      omp_set_lock(locks + (noderow % NLOCKS));
+      splatt_set_lock(noderow);
       p_add_hada_clear(outbuf, buf[outdepth], buf[outdepth-1], nfactors);
-      omp_unset_lock(locks + (noderow % NLOCKS));
+      splatt_unset_lock(noderow);
 
       /* backtrack to next unfinished node */
       do {
@@ -1279,6 +1825,13 @@ static void p_root_decide(
     double const * const opts)
 {
   idx_t const nmodes = tensor->nmodes;
+
+  matrix_t * const M = mats[MAX_NMODES];
+#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
+  if (nmodes != 3 || tensor->which_tile != SPLATT_NOTILE || M->J != 16)
+#endif
+    par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
+
   #pragma omp parallel
   {
     timer_start(&thds[omp_get_thread_num()].ttime);
@@ -1331,7 +1884,7 @@ static void p_leaf_decide(
   idx_t const depth = nmodes - 1;
 
   matrix_t * const M = mats[MAX_NMODES];
-  memset(M->vals, 0, M->I * M->J * sizeof(val_t));
+  par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
   #pragma omp parallel
   {
@@ -1341,13 +1894,13 @@ static void p_leaf_decide(
     idx_t tid = 0;
     switch(tensor->which_tile) {
     case SPLATT_NOTILE:
-      p_csf_mttkrp_leaf(tensor, 0, mats, thds);
+      p_csf_mttkrp_leaf(tensor, 0, mats, thds, opts);
       break;
     case SPLATT_DENSETILE:
       /* this mode may not be tiled due to minimum tiling depth */
       if(opts[SPLATT_OPTION_TILEDEPTH] > depth) {
         for(idx_t t=0; t < tensor->ntiles; ++t) {
-          p_csf_mttkrp_leaf(tensor, 0, mats, thds);
+          p_csf_mttkrp_leaf(tensor, 0, mats, thds, opts);
         }
       } else {
         #pragma omp for schedule(dynamic, 1) nowait
@@ -1384,7 +1937,7 @@ static void p_intl_decide(
   idx_t const depth = csf_mode_depth(mode, tensor->dim_perm, nmodes);
 
   matrix_t * const M = mats[MAX_NMODES];
-  memset(M->vals, 0, M->I * M->J * sizeof(val_t));
+  par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
   #pragma omp parallel
   {
@@ -1442,7 +1995,6 @@ void mttkrp_csf(
   /* clear output matrix */
   matrix_t * const M = mats[MAX_NMODES];
   M->I = tensors[0].dims[mode];
-  //if (2 == mode) memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
   omp_set_num_threads(opts[SPLATT_OPTION_NTHREADS]);
 
@@ -1531,7 +2083,7 @@ void mttkrp_splatt(
   idx_t const rank = M->J;
 
   val_t * const mvals = M->vals;
-  memset(mvals, 0, ft->dims[mode] * rank * sizeof(val_t));
+  par_memset(mvals, 0, ft->dims[mode] * rank * sizeof(val_t));
 
   val_t const * const avals = A->vals;
   val_t const * const bvals = B->vals;
@@ -1599,7 +2151,7 @@ void mttkrp_splatt_sync_tiled(
   idx_t const rank = M->J;
 
   val_t * const mvals = M->vals;
-  memset(mvals, 0, ft->dims[mode] * rank * sizeof(val_t));
+  par_memset(mvals, 0, ft->dims[mode] * rank * sizeof(val_t));
 
   val_t const * const avals = A->vals;
   val_t const * const bvals = B->vals;
@@ -1667,7 +2219,7 @@ void mttkrp_splatt_coop_tiled(
   idx_t const rank = M->J;
 
   val_t * const mvals = M->vals;
-  memset(mvals, 0, ft->dims[mode] * rank * sizeof(val_t));
+  par_memset(mvals, 0, ft->dims[mode] * rank * sizeof(val_t));
 
   val_t const * const avals = A->vals;
   val_t const * const bvals = B->vals;
@@ -1810,7 +2362,7 @@ void mttkrp_ttbox(
   idx_t const I = tt->dims[mode];
   idx_t const rank = M->J;
 
-  memset(M->vals, 0, I * rank * sizeof(val_t));
+  par_memset(M->vals, 0, I * rank * sizeof(val_t));
 
   idx_t const nnz = tt->nnz;
   idx_t const * const restrict indM = tt->ind[mode];
@@ -1849,7 +2401,7 @@ void mttkrp_stream(
   idx_t const nfactors = M->J;
 
   val_t * const outmat = M->vals;
-  memset(outmat, 0, I * nfactors * sizeof(val_t));
+  par_memset(outmat, 0, I * nfactors * sizeof(val_t));
 
   idx_t const nmodes = tt->nmodes;
 

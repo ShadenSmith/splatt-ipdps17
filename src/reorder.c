@@ -276,7 +276,7 @@ permutation_t * tt_perm(
 {
   timer_start(&timers[TIMER_REORDER]);
 
-  if(type != PERM_RAND && pfile == NULL) {
+  if(type != PERM_RAND && type != PERM_BFS && pfile == NULL) {
     fprintf(stderr, "SPLATT: permutation file must be supplied for now.\n");
     exit(1);
   }
@@ -304,6 +304,10 @@ permutation_t * tt_perm(
     parts = part_read(pfile, ft.nfibs, &nparts);
     perm = perm_hgraph(tt, &ft, parts, nparts, mode);
     ften_free(&ft);
+    break;
+
+  case PERM_BFS:
+    perm = perm_bfs(tt);
     break;
   default:
     break;

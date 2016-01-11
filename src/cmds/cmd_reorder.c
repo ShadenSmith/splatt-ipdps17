@@ -19,7 +19,8 @@ static char perm_doc[] =
   "  rand\t\t\tCreate a random permutation of a tensor\n"
   "  graph\t\t\tReorder based on the partitioning of a mode-independent graph\n"
   "Mode-dependent types are:\n"
-  "  hgraph\t\tReorder based on the partitioning of a fiber hyper-graph\n";
+  "  hgraph\t\tReorder based on the partitioning of a fiber hyper-graph\n"
+  "  bfs\t\t\tReorder based on breadth-first order\n";
 
 static struct argp_option perm_options[] = {
   { "type", 't', "TYPE", 0, "type of reordering" },
@@ -62,6 +63,8 @@ static error_t parse_perm_opt(
       args->type = PERM_GRAPH;
     } else if(strcmp(arg, "hgraph") == 0) {
       args->type = PERM_HGRAPH;
+    } else if(strcmp(arg, "bfs") == 0) {
+      args->type = PERM_BFS;
     } else {
       args->typestr = arg;
       args->type = PERM_ERROR;
