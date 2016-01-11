@@ -95,6 +95,9 @@ idx_t argmin_elem(
   idx_t const * const arr,
   idx_t const N);
 
+void par_memcpy(void *dst, const void *src, size_t n);
+void par_memset(void *ptr, int c, size_t n);
+
 #ifdef __cplusplus
 }
 #endif
