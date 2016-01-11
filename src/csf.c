@@ -2,10 +2,10 @@
 /******************************************************************************
  * INCLUDES
  *****************************************************************************/
-#include <omp.h>
 #include "csf.h"
 #include "sort.h"
 #include "tile.h"
+#include "util.h"
 
 #include "io.h"
 
@@ -130,6 +130,18 @@ static void p_order_dims_inorder(
   }
 }
 
+static void p_order_dims_round_robin(
+  idx_t const * const dims,
+  idx_t const nmodes,
+  idx_t const custom_mode,
+  idx_t * const perm_dims)
+{
+  for(idx_t m=0; m < nmodes; ++m) {
+    perm_dims[m] = (custom_mode + m)%nmodes;
+  }
+}
+
+
 
 /**
 * @brief Find a permutation of modes such that the first mode is 'custom-mode'
@@ -235,7 +247,8 @@ splatt_csf_write_file(
 void
 splatt_csf_write(
   splatt_csf const * const ct,
-  char const * const ofname)
+  char const * const ofname,
+  int ncopies)
 {
   FILE * fout = fopen(ofname,"w");
   if (fout == NULL) {
@@ -244,8 +257,10 @@ splatt_csf_write(
   }
 
   timer_start(&timers[TIMER_IO]);
-  splatt_csf_write_file(ct, fout);
-  splatt_csf_write_file(ct + 1, fout);
+  fwrite(&ncopies, sizeof(ncopies), 1, fout);
+  for (int i = 0; i < ncopies; ++i) {
+    splatt_csf_write_file(ct + i, fout);
+  }
   timer_stop(&timers[TIMER_IO]);
 
   fclose(fout);
@@ -320,7 +335,8 @@ int splatt_csf_equals(splatt_csf *ct1, splatt_csf *ct2)
 void
 splatt_csf_read(
   splatt_csf *ct,
-  char const * const ifname)
+  char const * const ifname,
+  int ncopies)
 {
   FILE * fin = fopen(ifname,"r");
   if (fin == NULL) {
@@ -329,8 +345,23 @@ splatt_csf_read(
   }
 
   timer_start(&timers[TIMER_IO]);
-  splatt_csf_read_file(ct, fin);
-  splatt_csf_read_file(ct + 1, fin);
+  int file_ncopies = 2;
+  fread(&file_ncopies, sizeof(file_ncopies), 1, fin);
+  if (ncopies == -1) {
+    splatt_csf_read_file(ct, fin);
+    ncopies = ct->nmodes;
+    for (int i = 1; i < ncopies; ++i) {
+      splatt_csf_read_file(ct + i, fin);
+    }
+  }
+  else {
+    if (file_ncopies < ncopies) {
+      fprintf(stderr, "SPLATT ERROR: %d copies are required but %s has only %d\n", ncopies, ifname, file_ncopies);
+    }
+    for (int i = 0; i < ncopies; ++i) {
+      splatt_csf_read_file(ct + i, fin);
+    }
+  }
   timer_stop(&timers[TIMER_IO]);
 
   fclose(fin);
@@ -561,21 +592,6 @@ static void p_mk_fptr(
   fp[nfibs] = nnz;
 }
 
-void par_memcpy(void *dst, const void *src, size_t n)
-{
-#pragma omp parallel
-  {
-    int nthreads = omp_get_num_threads();
-    int tid = omp_get_thread_num();
-
-    int n_per_thread = (n + nthreads - 1)/nthreads;
-    int n_begin = SS_MIN(n_per_thread*tid, n);
-    int n_end = SS_MIN(n_begin + n_per_thread, n);
-
-    memcpy(dst + n_begin, src + n_begin, n_end - n_begin);
-  }
-}
-
 /**
 * @brief Allocate and fill a CSF tensor from a coordinate tensor without
 *        tiling.
@@ -720,7 +736,7 @@ static void p_mk_csf(
   /* get the indices in order */
   csf_find_mode_order(tt->dims, tt->nmodes, mode_type, mode, ct->dim_perm);
 
-  ct->which_tile = splatt_opts[SPLATT_OPTION_TILE];
+  ct->which_tile = (splatt_tile_type)splatt_opts[SPLATT_OPTION_TILE];
   switch(ct->which_tile) {
   case SPLATT_NOTILE:
     p_csf_alloc_untiled(ct, tt);
@@ -745,7 +761,7 @@ void csf_free(
   double const * const opts)
 {
   idx_t ntensors = 0;
-  splatt_csf_type which = opts[SPLATT_OPTION_CSF_ALLOC];
+  splatt_csf_type which = (splatt_csf_type)opts[SPLATT_OPTION_CSF_ALLOC];
   switch(which) {
   case SPLATT_CSF_ONEMODE:
     ntensors = 1;
@@ -807,6 +823,10 @@ void csf_find_mode_order(
     p_order_dims_minusone(dims, nmodes, mode, perm_dims);
     break;
 
+  case CSF_ROUND_ROBIN:
+    p_order_dims_round_robin(dims, nmodes, mode, perm_dims);
+    break;
+
   default:
     fprintf(stderr, "SPLATT: csf_mode_type '%d' not recognized.\n", which);
     break;
@@ -819,7 +839,7 @@ size_t csf_storage(
   double const * const opts)
 {
   idx_t ntensors = 0;
-  splatt_csf_type which_alloc = opts[SPLATT_OPTION_CSF_ALLOC];
+  splatt_csf_type which_alloc = (splatt_csf_type)opts[SPLATT_OPTION_CSF_ALLOC];
   switch(which_alloc) {
   case SPLATT_CSF_ONEMODE:
     ntensors = 1;
@@ -901,6 +921,13 @@ splatt_csf * csf_alloc(
       p_mk_csf(ret + m, tt, CSF_SORTED_MINUSONE, m, opts);
     }
     break;
+
+  case SPLATT_CSF_ALLMODE_ROUND_ROBIN:
+    ret = malloc(tt->nmodes * sizeof(*ret));
+    for(idx_t m=0; m < tt->nmodes; ++m) {
+      p_mk_csf(ret + m, tt, CSF_ROUND_ROBIN, m, opts);
+    }
+    break;
   }
 
   return ret;
@@ -943,3 +970,22 @@ val_t csf_frobsq(
   return norm;
 }
 
+
+int csf_get_ncopies(double *opts, int nmodes)
+{
+  int ncopies = -1;
+  splatt_csf_type which_csf = (splatt_csf_type)opts[SPLATT_OPTION_CSF_ALLOC];
+  switch(which_csf) {
+  case SPLATT_CSF_ONEMODE:
+    ncopies = 1;
+    break;
+  case SPLATT_CSF_TWOMODE:
+    ncopies = 2;
+    break;
+  case SPLATT_CSF_ALLMODE:
+    ncopies = nmodes;
+    break;
+  }
+
+  return ncopies;
+}

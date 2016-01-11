@@ -22,7 +22,7 @@ static char cpd_doc[] =
 static struct argp_option cpd_options[] = {
   {"iters", 'i', "NITERS", 0, "maximum number of iterations to use (default: 50)"},
   {"tol", TT_TOL, "TOLERANCE", 0, "minimum change for convergence (default: 1e-5)"},
-  {"rank", 'r', "RANK", 0, "rank of decomposition to find (default: 10)"},
+  {"rank", 'r', "RANK", 0, "rank of decomposition to find (default: 16)"},
   {"threads", 't', "NTHREADS", 0, "number of threads to use (default: #cores)"},
   {"tile", TT_TILE, 0, 0, "use tiling during SPLATT"},
   {"nowrite", TT_NOWRITE, 0, 0, "do not write output to file"},
@@ -129,14 +129,14 @@ void splatt_cpd_cmd(
 
   print_header();
 
-  splatt_verbosity_type which_verb = args.opts[SPLATT_OPTION_VERBOSITY];
+  splatt_verbosity_type which_verb = (splatt_verbosity_type)args.opts[SPLATT_OPTION_VERBOSITY];
   splatt_csf * csf = NULL;
   idx_t nmodes;
 
   int l = strlen(args.ifname);
   if (l > 4 && !strcmp(args.ifname + l - 4, ".csf")) {
-    csf = malloc(sizeof(*csf)*2);
-    splatt_csf_read(csf, args.ifname);
+    csf = malloc(sizeof(*csf)*3);
+    splatt_csf_read(csf, args.ifname, csf_get_ncopies(args.opts, -1));
     nmodes = csf[0].nmodes;
 
 #ifdef SPLATT_CHECK_CSF_READ
@@ -178,7 +178,7 @@ void splatt_cpd_cmd(
 
   /* print CPD stats? */
   if(which_verb >= SPLATT_VERBOSITY_LOW) {
-    stats_csf(csf);
+    stats_csf(csf, csf_get_ncopies(args.opts, csf->nmodes));
     cpd_stats(csf, args.nfactors, args.opts);
   }
 

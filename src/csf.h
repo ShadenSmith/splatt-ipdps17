@@ -14,7 +14,8 @@ typedef enum
   CSF_SORTED_SMALLFIRST, /** sort the modes in non-decreasing order */
   CSF_SORTED_BIGFIRST,   /** sort the modes in non-increasing order */
   CSF_INORDER_MINUSONE,  /** one mode is placed first, rest naturally ordered*/
-  CSF_SORTED_MINUSONE    /** one mode is placed first, rest sorted by size */
+  CSF_SORTED_MINUSONE,   /** one mode is placed first, rest sorted by size */
+  CSF_ROUND_ROBIN,
 } csf_mode_type;
 
 
@@ -28,6 +29,10 @@ typedef enum
 /******************************************************************************
  * PUBLIC FUNCTIONS
  *****************************************************************************/
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define csf_alloc splatt_csf_alloc
 /**
@@ -55,12 +60,14 @@ void splatt_csf_read_file(
 void
 splatt_csf_write(
   splatt_csf const * const ct,
-  char const * const ofname);
+  char const * const ofname,
+  int ncopies);
 
 void
 splatt_csf_read(
   splatt_csf *ct,
-  char const * const ifname);
+  char const * const ifname,
+  int ncopies);
 
 #define csf_alloc_mode splatt_csf_alloc_mode
 /**
@@ -181,5 +188,11 @@ static inline idx_t csf_mode_depth(
   assert(1 == 2);
   return MAX_NMODES;
 }
+
+int csf_get_ncopies(double *opts, int nmodes);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
