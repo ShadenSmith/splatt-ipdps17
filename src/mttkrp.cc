@@ -385,7 +385,7 @@ static void p_csf_mttkrp_root3_(
   static int simulation_cnt = 0;
 #pragma omp barrier
 #pragma omp master
-  if (simulation_cnt < 2) {
+  if (simulation_cnt < 3) {
     simulateCache = true;
     for (int i = 0; i < omp_get_num_threads(); ++i) {
       tidsToSimulate.push_back(i);
@@ -554,7 +554,7 @@ static void p_csf_mttkrp_root3_(
 #ifdef SPLATT_SIM_CACHE
 #pragma omp barrier
 #pragma omp master
-  if (simulation_cnt < 2) {
+  if (simulation_cnt < 3) {
     Analyze();
     simulateCache = false;
     ++simulation_cnt;
