@@ -166,8 +166,8 @@ struct bfsAuxData
   int *q[2];
   int *qTail[2];
   int *qTailPrefixSum;
-  int *rowptrs;
-  int *nnzPrefixSum;
+  idx_t *rowptrs;
+  idx_t *nnzPrefixSum;
   int *candidates;
 
   bfsAuxData(int m);
@@ -184,8 +184,8 @@ bfsAuxData::bfsAuxData(int m)
 
   qTailPrefixSum = new int[omp_get_max_threads() + 1];
 
-  rowptrs = new int[omp_get_max_threads()*m];
-  nnzPrefixSum = new int[omp_get_max_threads() + 1];
+  rowptrs = new idx_t[omp_get_max_threads()*m];
+  nnzPrefixSum = new idx_t[omp_get_max_threads() + 1];
 
   candidates = new int[m];
 }
@@ -241,7 +241,7 @@ int bfs_serial_(
       int u = q[1 - numLevels%2][i + tid*A->m];
       assert(levels[u] == numLevels - 1);
 
-      for (int j = A->rowptr[u] - BASE; j < A->rowptr[u + 1] - BASE; ++j) {
+      for (idx_t j = A->rowptr[u] - BASE; j < A->rowptr[u + 1] - BASE; ++j) {
         int v = A->colidx[j] - BASE;
         if (-1 == levels[v]) {
           levels[v] = numLevels;
@@ -302,11 +302,11 @@ int bfs_(
   int *qTailPrefixSum = aux->qTailPrefixSum;
   qTailPrefixSum[0] = 0;
 
-  int *rowptrs = aux->rowptrs;
+  idx_t *rowptrs = aux->rowptrs;
   rowptrs[0] = 0;
   rowptrs[1] = A->rowptr[source + 1] - A->rowptr[source];
 
-  int *nnzPrefixSum = aux->nnzPrefixSum;
+  idx_t *nnzPrefixSum = aux->nnzPrefixSum;
   nnzPrefixSum[0] = 0;
   nnzPrefixSum[1] = rowptrs[1];
 
@@ -330,6 +330,10 @@ int bfs_(
         qTailPrefixSum[t + 1] = qTailPrefixSum[t] + qTail[numLevels%2][t];
         nnzPrefixSum[t + 1] += nnzPrefixSum[t];
       }
+#define PRINT_DBG
+#ifdef PRINT_DBG
+      printf("numLevels = %d\n", numLevels); fflush(stdout);
+#endif
       ++numLevels;
       if (width) {
         *width = max(*width, qTailPrefixSum[nthreads]);
@@ -346,7 +350,7 @@ int bfs_(
     if (qTailPrefixSum[nthreads] == 0 || numLevels == -1) break;
 
     // partition based on # of nnz
-    int nnzPerThread = (nnzPrefixSum[nthreads] + nthreads - 1)/nthreads;
+    idx_t nnzPerThread = (nnzPrefixSum[nthreads] + nthreads - 1)/nthreads;
     int tBegin = upper_bound(
         nnzPrefixSum, nnzPrefixSum + nthreads + 1,
         nnzPerThread*tid) -
@@ -395,7 +399,7 @@ int bfs_(
     synk::Barrier::getInstance()->wait(tid);
 
     int *tailPtr = q[numLevels%2] + tid*A->m;
-    int *rowptr = rowptrs + tid*A->m;
+    idx_t *rowptr = rowptrs + tid*A->m;
     *rowptr = 0;
 
     for (int t = tBegin; t <= tEnd; ++t) {
@@ -563,7 +567,6 @@ int selectSourcesWithPseudoDiameter(
 {
   // find the min degree node of this connected component
   int s = getMinDegreeNode(A, components, sizeOfComponents);
-#define PRINT_DBG
   int e = -1;
 
   int tid = omp_get_thread_num();
@@ -606,7 +609,7 @@ int selectSourcesWithPseudoDiameter(
       for (int k = 0; !adjacent && k < outIdx; ++k) {
         if (candidates[k] == u) adjacent = true;
       }
-      for (int j = A->rowptr[u]; !adjacent && j < A->rowptr[u + 1]; ++j) {
+      for (idx_t j = A->rowptr[u]; !adjacent && j < A->rowptr[u + 1]; ++j) {
         int v = A->colidx[j];
         for (int k = 0; !adjacent && k < outIdx; ++k) {
           if (candidates[k] == v) adjacent = true;
@@ -797,7 +800,7 @@ void CSR::getRCMPermutation(int *perm, int *inversePerm, bool pseudoDiameterSour
         int u = inversePerm[m - r - 1];
         ++r;
         int childrenIdx = 0;
-        for (int j = rowptr[u]; j < rowptr[u + 1]; ++j) {
+        for (idx_t j = rowptr[u]; j < rowptr[u + 1]; ++j) {
           int v = colidx[j];
           if (levels[v] == l + 1) {
             children[childrenIdx] = v;
@@ -913,7 +916,7 @@ void CSR::getRCMPermutation(int *perm, int *inversePerm, bool pseudoDiameterSour
           int u = inversePerm[m - r - 1];
           ++r;
           int childrenIdx = 0;
-          for (int j = rowptr[u]; j < rowptr[u + 1]; ++j) {
+          for (idx_t j = rowptr[u]; j < rowptr[u + 1]; ++j) {
             int v = colidx[j];
             if (levels[v] == l + 1) {
               children[childrenIdx] = v;
@@ -986,7 +989,7 @@ void CSR::getBFSPermutation(int *perm, int *inversePerm)
   int nNodesinFirstComp = 0;
   int numLevels = bfs<false, true>(this, 0, NULL, &bv, &aux, inversePerm, &nNodesinFirstComp);
 #ifdef PRINT_DBG
-  printf("numLevels = %d\n", numLevels);
+  printf("numLevels = %d\n", numLevels); fflush(stdout);
 #endif
 #pragma omp parallel for
   for (int i = 0; i < nNodesinFirstComp; ++i) {
@@ -1093,7 +1096,7 @@ void CSR::getBFSPermutation(int *perm, int *inversePerm)
     int temp = -1;
     int numLevels = bfs<false, true>(this, i, NULL, &bv, &aux, inversePerm + offset, &temp);
 #ifdef PRINT_DBG
-    printf("numLevels = %d\n", numLevels);
+    printf("numLevels = %d\n", numLevels); fflush(stdout);
 #endif
 #pragma omp parallel for
     for (int i = 0; i < compSizes[c]; ++i) {

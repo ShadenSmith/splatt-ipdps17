@@ -150,7 +150,7 @@ void findConnectedComponents_(
 
   for (int x = xBegin; x < xEnd; ++x) {
     int xx = WITH_BIT_VECTOR ? nodesToFind[x] : x;
-    for (int j = A->rowptr[xx] - BASE; j < A->rowptr[xx + 1] - BASE; ++j) {
+    for (idx_t j = A->rowptr[xx] - BASE; j < A->rowptr[xx + 1] - BASE; ++j) {
       int y = A->colidx[j] - BASE;
       assert(!WITH_BIT_VECTOR || !bv->get(y));
       if (p[xx] != p[y]) {
