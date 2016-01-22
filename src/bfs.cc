@@ -24,6 +24,15 @@ permutation_t *perm_bfs(sptensor_t * const tt)
   opts[SPLATT_OPTION_CSF_ALLOC] = SPLATT_CSF_ALLMODE_ROUND_ROBIN;
   splatt_csf *csf = splatt_csf_alloc(tt, opts);
 
+  idx_t max_dims = 0;
+  for(int m=0; m < tt->nmodes; ++m) {
+    max_dims = max(max_dims, tt->dims[m]);
+  }
+  omp_lock_t *locks = new omp_lock_t[max_dims];
+  for(int i=0; i < max_dims; ++i) {
+    omp_init_lock(locks + i);
+  }
+
   for(int k=0; k < tt->nmodes; ++k) {
     idx_t mode = csf[k].dim_perm[tt->nmodes - 1];
 
@@ -31,7 +40,7 @@ permutation_t *perm_bfs(sptensor_t * const tt)
     A.m = tt->dims[mode];
     A.n = A.m;
 
-    vector<tbb::concurrent_unordered_set<int> > g(A.m);
+    vector<vector<int> > g(A.m);
 
     csf_sparsity *tile = csf[k].pt;
 
@@ -41,23 +50,32 @@ permutation_t *perm_bfs(sptensor_t * const tt)
     idx_t nfibers = tile->nfibs[tt->nmodes - 2];
 
     double t = omp_get_wtime();
+    idx_t temp_cnt = 0;
 
-#pragma omp parallel for
+#pragma omp parallel for reduction(+:temp_cnt)
     for(idx_t f=0; f < nfibers; ++f) {
       if (0 == omp_get_thread_num() && f%max((size_t)(nfibers/omp_get_num_threads()/100.), 1UL) == 0) {
-        printf("%ld%% f=%ld fibers=%ld elapsed_time=%f\n", f/max((size_t)(nfibers/omp_get_num_threads()/100.), 1UL), f, fptr[f + 1] - fptr[f], omp_get_wtime() - t);
+        printf("%ld%% f=%ld fibers=%ld nnz=%ld elapsed_time=%f\n", f/max((size_t)(nfibers/omp_get_num_threads()/100.), 1UL), f, fptr[f + 1] - fptr[f], temp_cnt, omp_get_wtime() - t);
         t = omp_get_wtime();
       }
       for(idx_t i=fptr[f]; i < fptr[f + 1]; ++i) {
         idx_t src = inds[i];
-        /*for(idx_t j=fptr[f]; j < fptr[f + 1]; ++j) {
+        omp_set_lock(locks + src);
+        for(idx_t j=fptr[f]; j < fptr[f + 1]; ++j) {
           idx_t dst = inds[j];
-          if (dst != src) g[src].insert(dst);
-        }*/
-        g[src].insert(inds + fptr[f], inds + i);
-        g[src].insert(inds + i + 1, inds + fptr[f + 1]);
+          if (dst != src) {
+            vector<int>::iterator itr = lower_bound(g[src].begin(), g[src].end(), dst);
+            if (itr == g[src].end() || *itr != dst) {
+              g[src].insert(itr, dst);
+              ++temp_cnt;
+            }
+          }
+        }
+        omp_unset_lock(locks + src);
       } // for each nnz pair in fiber
     } // for each fiber
+
+    t = omp_get_wtime();
 
     A.rowptr = new idx_t[A.m + 1];
     idx_t nnz = 0;
@@ -66,27 +84,33 @@ permutation_t *perm_bfs(sptensor_t * const tt)
       nnz += g[i].size();
     }
     A.rowptr[A.m] = nnz;
-    printf("%s:%d nnz=%ld nnz_per_row=%f\n", __FILE__, __LINE__, nnz, (double)nnz/A.m);
+    printf("%s:%d nnz=%ld nnz_per_row=%f %f\n", __FILE__, __LINE__, nnz, (double)nnz/A.m, omp_get_wtime() - t);
+    t = omp_get_wtime();
 
     A.colidx = new int[nnz];
+#pragma omp parallel for
     for(int i=0; i < A.m; ++i) {
       copy(g[i].begin(), g[i].end(), A.colidx + A.rowptr[i]);
-      sort(A.colidx + A.rowptr[i], A.colidx + A.rowptr[i + 1]);
     }
     g.clear();
+
+    printf("%s:%d %f\n", __FILE__, __LINE__, omp_get_wtime() - t);
+    t = omp_get_wtime();
 
     int *temp_perm = new int[A.m];
     int *temp_iperm = new int[A.m];
     A.getBFSPermutation(temp_perm, temp_iperm);
 
-//#pragma omp parallel for
+    printf("%s:%d %f\n", __FILE__, __LINE__, omp_get_wtime() - t);
+    t = omp_get_wtime();
+
+#pragma omp parallel for
     for(int i=0; i < A.m; ++i) {
       perm->perms[mode][i] = temp_perm[i];
       perm->iperms[mode][i] = temp_iperm[i];
-      if (perm->perms[mode][i] != i) {
-        printf("%d->%d\n", temp_perm[i], i);
-      }
     }
+
+    printf("%s:%d %f\n", __FILE__, __LINE__, omp_get_wtime() - t);
 
     delete[] temp_perm;
     delete[] temp_iperm;
@@ -94,6 +118,13 @@ permutation_t *perm_bfs(sptensor_t * const tt)
     delete[] A.rowptr;
     delete[] A.colidx;
   }
+
+  for (int i=0; i < max_dims; ++i) {
+    omp_destroy_lock(locks + i);
+  }
+
+  delete[] locks;
+
 #else // slice based bfs
   // inter-mode graph for m1->m2 is a bipartite graph from ith mode to jth mode
   // for each non-zero at (x_1, ..., x_m1, ..., x_m2, ..., x_m),
