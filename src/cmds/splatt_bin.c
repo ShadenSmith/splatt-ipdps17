@@ -103,12 +103,7 @@ int main(
   MPI_Comm_size(MPI_COMM_WORLD, &size);
 #endif
 
-#define SPLATT_DETERMINISTIC
-#ifdef SPLATT_DETERMINISTIC
-  srand(0);
-#else
   srand(time(NULL) * (rank+1));
-#endif
 
   /* initialize timers */
   init_timers();
