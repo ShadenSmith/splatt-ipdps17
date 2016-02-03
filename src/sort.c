@@ -3,6 +3,8 @@
 /******************************************************************************
  * INCLUDES
  *****************************************************************************/
+#include <omp.h>
+
 #include "sort.h"
 #include "timer.h"
 
@@ -19,6 +21,7 @@
 /******************************************************************************
  * STATIC FUNCTIONS
  *****************************************************************************/
+
 
 /**
 * @brief Compares ind*[i] and j[*] for three-mode tensors.
@@ -200,7 +203,7 @@ static void p_tt_insertionsort3(
 
   for(size_t i=start+1; i < end; ++i) {
     size_t j = i;
-    while (j > 0 && p_ttcmp3(ind0, ind1, ind2, i, j-1) < 0) {
+    while (j > start && p_ttcmp3(ind0, ind1, ind2, i, j-1) < 0) {
       --j;
     }
 
@@ -245,7 +248,7 @@ static void p_tt_insertionsort(
 
   for(size_t i=start+1; i < end; ++i) {
     size_t j = i;
-    while (j > 0 && p_ttcmp(tt, cmplt, i, j-1) < 0) {
+    while (j > start && p_ttcmp(tt, cmplt, i, j-1) < 0) {
       --j;
     }
 
@@ -355,6 +358,345 @@ static void p_tt_quicksort3(
   }
 }
 
+#if 1
+#define SWAP(T, a, b) do { T tmp = a; a = b; b = tmp; } while (0)
+
+static inline int cmp3(
+  idx_t *a1, idx_t *a2, idx_t *a3, int idx1, int idx2)
+{
+  if (a1[idx1] < a1[idx2]) {
+    return -1;
+  }
+  else if (a1[idx1] > a1[idx2]) {
+    return 1;
+  }
+
+  if (a2[idx1] < a2[idx2]) {
+    return -1;
+  }
+  else if (a2[idx1] > a2[idx2]) {
+    return 1;
+  }
+
+  if (a3[idx1] < a3[idx2]) {
+    return -1;
+  }
+  else if (a3[idx1] > a3[idx2]) {
+    return 1;
+  }
+
+  return 0;
+}
+
+static void merge(
+  idx_t *in_idx1, idx_t *in_idx2, idx_t* in_idx3, val_t *in_val,
+  int first1, int last1, int first2, int last2,
+  idx_t *out_idx1, idx_t *out_idx2, idx_t *out_idx3, val_t *out_val)
+{
+  int out = 0;
+  for ( ; first1 != last1; ++out) {
+    if (first2 == last2) {
+      for ( ; first1 != last1; ++first1, ++out) {
+        out_idx1[out] = in_idx1[first1];
+        out_idx2[out] = in_idx2[first1];
+        out_idx3[out] = in_idx3[first1];
+        out_val[out] = in_val[first1];
+      }
+      return;
+    }
+    /*int a_is_less = 0;
+    if (a1[a_idx] < b1[b_idx]) {
+      a_is_less = 1;
+    }
+    else if (a1[a_idx] == b1[b_idx]) {
+      if (a2[a_idx] < b2[b_idx]) {
+        a_is_less = 1;
+      }
+      else if (a2[a_idx] == b2[b_idx]) {
+        if (a3[a_idx] < b3[b_idx]) {
+          a_is_less = 1;
+        }
+      }
+    }*/
+
+    if (cmp3(in_idx1, in_idx2, in_idx3, first1, first2) < 0) {
+      out_idx1[out] = in_idx1[first1];
+      out_idx2[out] = in_idx2[first1];
+      out_idx3[out] = in_idx3[first1];
+      out_val[out] = in_val[first1];
+      ++first1;
+    }
+    else {
+      out_idx1[out] = in_idx1[first2];
+      out_idx2[out] = in_idx2[first2];
+      out_idx3[out] = in_idx3[first2];
+      out_val[out] = in_val[first2];
+      ++first2;
+    }
+  }
+  for ( ; first2 != last2; ++first2, ++out) {
+    out_idx1[out] = in_idx1[first2];
+    out_idx2[out] = in_idx2[first2];
+    out_idx3[out] = in_idx3[first2];
+    out_val[out] = in_val[first2];
+  }
+}
+
+static void kth_element_(
+   int *out1, int *out2,
+   idx_t *in1, idx_t *in2, idx_t *in3,
+   int begin1, int begin2,
+   int left, int right,
+   int n1, int n2,
+   int k)
+{
+  while (1) {
+    int i = (left + right)/2; // right < k -> i < k
+    int j = k - i - 1;
+
+    if ((j == -1 || cmp3(in1, in2, in3, begin1 + i, begin2 + j) >= 0) &&
+      (j == n2 - 1 || cmp3(in1, in2, in3, begin1 + i, begin2 + j + 1) <= 0)) {
+      *out1 = i; *out2 = j + 1;
+      return;
+    }
+    else if (j >= 0 && cmp3(in1, in2, in3, begin1 + i, begin2 + j) <= 0 &&
+      (i == n1 - 1 || cmp3(in1, in2, in3, begin1 + i + 1, begin2 + j) >= 0)) {
+      *out1 = i + 1; *out2 = j;
+      return;
+    }
+    else if (cmp3(in1, in2, in3, begin1 + i, begin2 + j) > 0 &&
+        j != n2 - 1 &&
+        cmp3(in1, in2, in3, begin1 + i, begin2 + j + 1) > 0) {
+      // search in left half of a1
+      right = i - 1;
+    }
+    else {
+      // search in right half of a1
+      left = i + 1;
+    }
+  }
+}
+
+/**
+ * Partition the input so that
+ * a[0:*out1) and b[0:*out2) contain the smallest k elements
+ */
+static void kth_element(
+  int *out1, int *out2,
+  idx_t *in1, idx_t *in2, idx_t *in3,
+  int begin1, int begin2,
+  int n1, int n2, int k)
+{
+  // either of the inputs is empty
+  if (n1 == 0) {
+    *out1 = 0; *out2 = k;
+    return;
+  }
+  if (n2 == 0) {
+    *out1 = k; *out2 = 0;
+    return;
+  }
+  if (k >= n1 + n2) {
+    *out1 = n1; *out2 = n2;
+    return;
+  }
+
+  // one is greater than the other
+  if (k < n1 && cmp3(in1, in2, in3, begin1 + k, begin2) <= 0) {
+    *out1 = k; *out2 = 0;
+    return;
+  }
+  if (k - n1 >= 0 && cmp3(in1, in2, in3, begin1 + n1 - 1, begin2 + k - n1) <= 0) {
+    *out1 = n1; *out2 = k - n1;
+    return;
+  }
+  if (k < n2 && cmp3(in1, in2, in3, begin1, begin2 + k) >= 0) {
+    *out1 = 0; *out2 = k;
+    return;
+  }
+  if (k - n2 >= 0 && cmp3(in1, in2, in3, begin1 + k - n2, begin2 + n2 - 1) >= 0) {
+    *out1 = k - n2; *out2 = n2;
+    return;
+  }
+  // now k > 0
+
+  // faster to do binary search on the shorter sequence
+  if (n1 > n2) {
+    SWAP(int, n1, n2);
+    SWAP(int, begin1, begin2);
+    SWAP(int *, out1, out2);
+  }
+
+  if (k < (n1 + n2)/2) {
+    kth_element_(out1, out2, in1, in2, in3, begin1, begin2, 0, SS_MIN(n1 - 1, k), n1, n2, k);
+  }
+  else {
+    // when k is big, faster to find (n1 + n2 - k)th biggest element
+    int offset1 = SS_MAX(k - n2, 0), offset2 = SS_MAX(k - n1, 0);
+    int new_k = k - offset1 - offset2;
+
+    int new_n1 = SS_MIN(n1 - offset1, new_k + 1);
+    int new_n2 = SS_MIN(n2 - offset2, new_k + 1);
+    kth_element_(out1, out2, in1, in2, in3, begin1 + offset1, begin2 + offset2, 0, new_n1 - 1, new_n1, new_n2, new_k);
+
+    *out1 += offset1;
+    *out2 += offset2;
+  }
+}
+
+/**
+ * @param num_threads number of threads that participate in this merge
+ * @param my_thread_num thread id (zeor-based) among the threads that participate in this merge
+ */
+static void parallel_merge(
+  idx_t *in1, idx_t *in2, idx_t *in3, val_t *in_val,
+  int in_begin1, int in_begin2,
+  int n1, int n2,
+  idx_t *out1, idx_t *out2, idx_t *out3, val_t *out_val,
+  int num_threads, int my_thread_num)
+{
+   int n = n1 + n2;
+   int n_per_thread = (n + num_threads - 1)/num_threads;
+   int begin_rank = SS_MIN(n_per_thread*my_thread_num, n);
+   int end_rank = SS_MIN(begin_rank + n_per_thread, n);
+
+   int begin1, begin2, end1, end2;
+   kth_element(&begin1, &begin2, in1, in2, in3, in_begin1, in_begin2, n1, n2, begin_rank);
+   kth_element(&end1, &end2, in1, in2, in3, in_begin1, in_begin2, n1, n2, end_rank);
+
+   begin1 += in_begin1;
+   end1 += in_begin1;
+   begin2 += in_begin2;
+   end2 += in_begin2;
+
+   while (begin1 > end1 && begin1 > in_begin1 && begin2 < in_begin2 + n2 && cmp3(in1, in2, in3, begin1 - 1, begin2) == 0) {
+      begin1--; begin2++; 
+   }
+   while (begin2 > end2 && end1 > in_begin1 && end2 < in_begin2 + n2 && cmp3(in1, in2, in3, end1 - 1, end2) == 0) {
+      end1--; end2++;
+   }
+
+   merge(
+    in1, in2, in3, in_val, begin1, end1, begin2, end2,
+    out1 + begin1 + begin2 - in_begin1 - in_begin2,
+    out2 + begin1 + begin2 - in_begin1 - in_begin2,
+    out3 + begin1 + begin2 - in_begin1 - in_begin2,
+    out_val + begin1 + begin2 - in_begin1 - in_begin2);
+}
+
+void merge_sort(
+  sptensor_t * const tt,
+  idx_t const * const cmplt,
+  idx_t start, idx_t end)
+{
+   int len = end - start;
+   if (len == 0) return;
+
+   idx_t *temp1 = (idx_t *)splatt_malloc(len * sizeof(idx_t));
+   idx_t *temp2 = (idx_t *)splatt_malloc(len * sizeof(idx_t));
+   idx_t *temp3 = (idx_t *)splatt_malloc(len * sizeof(idx_t));
+   val_t *temp_val = (val_t *)splatt_malloc(len * sizeof(val_t));
+
+   int thread_private_len[omp_get_max_threads()];
+   int out_len = 0;
+
+#pragma omp parallel
+   {
+      int num_threads = omp_get_num_threads();
+      int my_thread_num = omp_get_thread_num();
+
+      // thread-private sort
+      int i_per_thread = (len + num_threads - 1)/num_threads;
+      int i_begin = SS_MIN(i_per_thread*my_thread_num, len);
+      int i_end = SS_MIN(i_begin + i_per_thread, len);
+
+      p_tt_quicksort3(tt, cmplt, start + i_begin, start + i_end);
+
+      // merge sorted sequences
+      int in_group_size;
+
+      idx_t *in_buf1 = tt->ind[cmplt[0]] + start;
+      idx_t *in_buf2 = tt->ind[cmplt[1]] + start;
+      idx_t *in_buf3 = tt->ind[cmplt[2]] + start;
+      val_t *in_val = tt->vals + start;
+
+      idx_t *out_buf1 = temp1;
+      idx_t *out_buf2 = temp2;
+      idx_t *out_buf3 = temp3;
+      val_t *out_val = temp_val;
+
+      for (in_group_size = 1; in_group_size < num_threads; in_group_size *= 2)
+      {
+#pragma omp barrier
+
+         // merge 2 in-groups into 1 out-group
+         int out_group_size = in_group_size*2;
+         int group_leader = my_thread_num/out_group_size*out_group_size;
+         int group_sub_leader = SS_MIN(group_leader + in_group_size, num_threads - 1);
+         int id_in_group = my_thread_num%out_group_size;
+         int num_threads_in_group =
+            SS_MIN(group_leader + out_group_size, num_threads) - group_leader;
+
+         int in_group1_begin = SS_MIN(i_per_thread*group_leader, len);
+         int in_group1_end = SS_MIN(in_group1_begin + i_per_thread*in_group_size, len);
+
+         int in_group2_begin = SS_MIN(in_group1_begin + i_per_thread*in_group_size, len);
+         int in_group2_end = SS_MIN(in_group2_begin + i_per_thread*in_group_size, len);
+
+         parallel_merge(
+            in_buf1, in_buf2, in_buf3, in_val,
+            in_group1_begin, in_group2_begin,
+            in_group1_end - in_group1_begin,
+            in_group2_end - in_group2_begin,
+            out_buf1 + in_group1_begin,
+            out_buf2 + in_group1_begin,
+            out_buf3 + in_group1_begin,
+            out_val + in_group1_begin,
+            num_threads_in_group,
+            id_in_group);
+
+         idx_t *temp1 = in_buf1;
+         idx_t *temp2 = in_buf2;
+         idx_t *temp3 = in_buf3;
+         val_t *temp_val = in_val;
+
+         in_buf1 = out_buf1;
+         in_buf2 = out_buf2;
+         in_buf3 = out_buf3;
+         in_val = out_val;
+
+         out_buf1 = temp1;
+         out_buf2 = temp2;
+         out_buf3 = temp3;
+         out_val = temp_val;
+      }
+
+#pragma omp barrier
+
+      if (0 == my_thread_num) {
+        if (tt->ind[cmplt[0]] != in_buf1) {
+          assert(start == 0);
+
+          splatt_free(tt->ind[0]);
+          splatt_free(tt->ind[1]);
+          splatt_free(tt->ind[2]);
+          splatt_free(tt->vals);
+
+          tt->ind[cmplt[0]] = in_buf1;
+          tt->ind[cmplt[1]] = in_buf2;
+          tt->ind[cmplt[2]] = in_buf3;
+          tt->vals = in_val;
+        }
+        else {
+          splatt_free(temp1);
+          splatt_free(temp2);
+          splatt_free(temp3);
+          splatt_free(temp_val);
+        }
+      }
+   } /* omp parallel */
+}
+#endif
 
 /**
 * @brief Perform quicksort on a n-mode tensor between start and end.
@@ -465,13 +807,15 @@ void tt_sort_range(
     cmplt = dim_perm;
   }
 
+  sptensor_t *tt2;
+
   timer_start(&timers[TIMER_SORT]);
   switch(tt->type) {
   case SPLATT_NMODE:
     p_tt_quicksort(tt, cmplt, start, end);
     break;
   case SPLATT_3MODE:
-    p_tt_quicksort3(tt, cmplt, start, end);
+    merge_sort(tt, cmplt, start, end);
     break;
   }
 
