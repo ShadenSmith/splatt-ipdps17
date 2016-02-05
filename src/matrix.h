@@ -58,7 +58,7 @@ void mat_cholesky(
 
 #define mat_matmul splatt_mat_matmul
 /**
-* @brief Dense matrix-matrix multiplication, C = AB + C.
+* @brief Dense matrix-matrix multiplication, C = AB.
 *
 * @param A The left multiplication parameter.
 * @param B The right multiplication parameter.
