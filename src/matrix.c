@@ -441,7 +441,7 @@ void mat_matmul(
 
 #define SPLATT_USE_MKL
 #ifdef SPLATT_USE_MKL
-  cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, A->I, B->J, A->J, 1, A->vals, A->J, B->vals, B->J, 1, C->vals, C->J);
+  cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, A->I, B->J, A->J, 1, A->vals, A->J, B->vals, B->J, 0, C->vals, C->J);
 #else
 
   /* check dimensions */
@@ -471,7 +471,7 @@ void mat_matmul(
           for(idx_t k=kt; k < KSTOP; ++k) {
             accum += av[k + (i*Na)] * bv[j + (k*N)];
           }
-          cv[j + (i*N)] += accum;
+          cv[j + (i*N)] = accum;
         }
       }
     }
@@ -569,10 +569,10 @@ matrix_t * mat_alloc(
   idx_t const nrows,
   idx_t const ncols)
 {
-  matrix_t * mat = (matrix_t *) malloc(sizeof(matrix_t));
+  matrix_t * mat = (matrix_t *) splatt_malloc(sizeof(matrix_t));
   mat->I = nrows;
   mat->J = ncols;
-  posix_memalign((void **)(&mat->vals), 64, nrows * ncols * sizeof(val_t));
+  mat->vals = (val_t *) splatt_malloc(nrows * ncols * sizeof(val_t));
   mat->rowmajor = 1;
   return mat;
 }
@@ -645,13 +645,13 @@ spmatrix_t * spmat_alloc(
   idx_t const ncols,
   idx_t const nnz)
 {
-  spmatrix_t * mat = (spmatrix_t*) malloc(sizeof(spmatrix_t));
+  spmatrix_t * mat = (spmatrix_t*) splatt_malloc(sizeof(spmatrix_t));
   mat->I = nrows;
   mat->J = ncols;
   mat->nnz = nnz;
-  mat->rowptr = (idx_t*) malloc((nrows+1) * sizeof(idx_t));
-  mat->colind = (idx_t*) malloc(nnz * sizeof(idx_t));
-  mat->vals   = (val_t*) malloc(nnz * sizeof(val_t));
+  mat->rowptr = (idx_t*) splatt_malloc((nrows+1) * sizeof(idx_t));
+  mat->colind = (idx_t*) splatt_malloc(nnz * sizeof(idx_t));
+  mat->vals   = (val_t*) splatt_malloc(nnz * sizeof(val_t));
   return mat;
 }
 
