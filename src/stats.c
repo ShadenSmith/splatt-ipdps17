@@ -426,7 +426,7 @@ void mpi_cpd_stats(
 
   /* CSF allocation */
   printf("CSF-ALLOC=");
-  splatt_csf_type which_csf = opts[SPLATT_OPTION_CSF_ALLOC];
+  splatt_csf_type which_csf = (splatt_csf_type)opts[SPLATT_OPTION_CSF_ALLOC];
   switch(which_csf) {
   case SPLATT_CSF_ONEMODE:
     printf("ONEMODE");
@@ -442,7 +442,7 @@ void mpi_cpd_stats(
 
   /* tiling info */
   printf("TILE=");
-  splatt_tile_type which_tile = opts[SPLATT_OPTION_TILE];
+  splatt_tile_type which_tile = (splatt_tile_type)opts[SPLATT_OPTION_TILE];
   switch(which_tile) {
   case SPLATT_NOTILE:
     printf("NO");
