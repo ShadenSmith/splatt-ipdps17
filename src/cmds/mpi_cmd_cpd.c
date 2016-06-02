@@ -3,6 +3,8 @@
 /******************************************************************************
  * INCLUDES
  *****************************************************************************/
+#include <omp.h>
+
 #include "splatt_cmds.h"
 #include "../io.h"
 #include "../sptensor.h"
@@ -68,7 +70,7 @@ static void default_cpd_opts(
   args->write     = DEFAULT_WRITE;
   args->nfactors  = DEFAULT_NFACTORS;
 
-  args->decomp = DEFAULT_MPI_DISTRIBUTION;
+  args->decomp = (splatt_decomp_type)DEFAULT_MPI_DISTRIBUTION;
   for(idx_t m=0; m < MAX_NMODES; ++m) {
     args->mpi_dims[m] = 1;
   }
@@ -101,6 +103,7 @@ static error_t parse_cpd_opt(
     args->opts[SPLATT_OPTION_NTHREADS] = (double) atoi(arg);
     break;
   case 'v':
+    timer_inc_verbose();
     args->opts[SPLATT_OPTION_VERBOSITY] += 1;
     break;
   case TT_TILE:
@@ -186,7 +189,7 @@ void splatt_mpi_cpd_cmd(
     print_header();
   }
 
-  tt = mpi_tt_read(args.ifname, args.pfname, &rinfo);
+  tt = mpi_tt_read(args.ifname, args.pfname, &rinfo, args.opts);
 
   /* In the default setting, mpi_tt_read will set rinfo distribution.
    * Copy that back into args. TODO: make this less dumb. */
@@ -201,7 +204,9 @@ void splatt_mpi_cpd_cmd(
   }
 
   /* determine matrix distribution - this also calls tt_remove_empty() */
+  double t = omp_get_wtime();
   permutation_t * perm = mpi_distribute_mats(&rinfo, tt, rinfo.decomp);
+  if (0 == rinfo.rank) printf("mpi_distribute_mats takes %f\n", omp_get_wtime() - t);
 
   /* 1D distributions require filtering because tt has nonzeros that
    * don't belong in each ftensor */
@@ -226,7 +231,7 @@ void splatt_mpi_cpd_cmd(
       mpi_cpy_indmap(tt_filtered, &rinfo, m);
 
       mpi_find_owned(tt, m, &rinfo);
-      mpi_compute_ineed(&rinfo, tt, m, args.nfactors, 1);
+      mpi_compute_ineed(&rinfo, tt, m, args.nfactors, (splatt_decomp_type)1);
 
       /* fill csf[m] */
       csf_alloc_mode(tt_filtered, CSF_SORTED_MINUSONE, m, csf+m, args.opts);
@@ -257,7 +262,7 @@ void splatt_mpi_cpd_cmd(
       /* index into local tensor to grab owned rows */
       mpi_find_owned(tt, m, &rinfo);
       /* determine isend and ineed lists */
-      mpi_compute_ineed(&rinfo, tt, m, args.nfactors, 3);
+      mpi_compute_ineed(&rinfo, tt, m, args.nfactors, (splatt_decomp_type)3);
     }
   } /* end 3D distribution */
 

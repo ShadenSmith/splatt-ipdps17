@@ -92,8 +92,8 @@ typedef struct
   int rank;
   int npes;
   int rank_3d;
-  int dims_3d[MAX_NMODES];
-  int coords_3d[MAX_NMODES];
+  int dims_3d[MAX_NMODES]; /* processor grid */
+  int coords_3d[MAX_NMODES]; /* coord in processor grid (obtained by MPI_Cart_coords */
   int layer_rank[MAX_NMODES];
   int layer_size[MAX_NMODES];
 
@@ -270,7 +270,8 @@ void mpi_compute_ineed(
 sptensor_t * mpi_tt_read(
   char const * const ifname,
   char const * const pfname,
-  rank_info * const rinfo);
+  rank_info * const rinfo,
+  double const * const opts);
 
 
 
@@ -365,7 +366,8 @@ void mpi_cpy_indmap(
 * @param rinfo The rank data structure.
 */
 void mpi_setup_comms(
-  rank_info * const rinfo);
+  rank_info * const rinfo,
+  double const * const opts);
 
 
 #define rank_free splatt_rank_free

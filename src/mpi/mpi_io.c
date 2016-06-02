@@ -2,10 +2,12 @@
 /******************************************************************************
  * INCLUDES
  *****************************************************************************/
+#include <omp.h>
+
 #include "../splatt_mpi.h"
 #include "../io.h"
 #include "../timer.h"
-
+#include "../csf.h"
 
 
 /******************************************************************************
@@ -242,13 +244,14 @@ static void p_find_my_slices(
   idx_t ** const ssizes,
   idx_t const nmodes,
   idx_t const nnz,
-  rank_info * const rinfo)
+  rank_info * const rinfo,
+  double const * const opts)
 {
   idx_t const * const dims = rinfo->global_dims;
 
   /* find start/end slices for my partition */
   for(idx_t m=0; m < nmodes; ++m) {
-    idx_t pnnz = nnz / rinfo->dims_3d[m]; /* nnz in a layer */
+    idx_t pnnz = nnz / rinfo->dims_3d[m]; /* average nnz in a layer */
     /* current processor */
     int currp  = 0;
     idx_t lastn = 0;
@@ -618,18 +621,44 @@ static sptensor_t * p_read_tt_3d(
   char const * const fname,
   idx_t ** const ssizes,
   idx_t const nmodes,
-  rank_info * const rinfo)
+  rank_info * const rinfo,
+  double const * const opts)
 {
   int const rank = rinfo->rank_3d;
   idx_t const nnz = rinfo->global_nnz;
   idx_t const * const dims = rinfo->global_dims;
 
   /* find start/end slices for my partition */
-  p_find_my_slices(ssizes, nmodes, nnz, rinfo);
+  p_find_my_slices(ssizes, nmodes, nnz, rinfo, opts);
 
   /* count nnz in my partition and allocate */
   idx_t const mynnz = p_count_my_nnz(fname, nmodes, rinfo->layer_starts,
       rinfo->layer_ends);
+
+  if(opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
+    if(0 == rinfo->rank) {
+      printf("    rank");
+      for(int m=0; m < nmodes; ++m) {
+        printf("\tlayer%d:nnz(avg:%"SPLATT_PF_IDX")", m, nnz/rinfo->dims_3d[m]);
+      }
+      printf("\tmynnz(avg:%"SPLATT_PF_IDX")\n", nnz/rinfo->npes);
+    }
+    for(int p=0; p < rinfo->npes; ++p) {
+      MPI_Barrier(MPI_COMM_WORLD);
+      if(p == rinfo->rank) {
+        printf("    %d", p);
+        for(idx_t m=0; m < nmodes; ++m) {
+          idx_t nnz = 0;
+          for(idx_t s=rinfo->layer_starts[m]; s < rinfo->layer_ends[m]; ++s) {
+            nnz += ssizes[m][s];
+          }
+          printf("\t%d:%"SPLATT_PF_IDX, rinfo->coords_3d[m], nnz);
+        }
+        printf("\t%"SPLATT_PF_IDX"\n", mynnz);
+      }
+    }
+  }
+
   sptensor_t * tt = tt_alloc(mynnz, nmodes);
 
   /* now actually load values */
@@ -653,7 +682,9 @@ static void p_fill_ssizes(
 {
   for(idx_t m=0; m < tt->nmodes; ++m) {
     idx_t const * const ind = tt->ind[m];
+#pragma omp parallel for
     for(idx_t n=0; n < tt->nnz; ++n) {
+#pragma omp atomic
       ssizes[m][ind[n]] += 1;
     }
 
@@ -778,7 +809,8 @@ static int * p_get_primes(
 * @param rinfo MPI rank information.
 */
 static void p_get_best_mpi_dim(
-  rank_info * const rinfo)
+  rank_info * const rinfo,
+  double const * const opts)
 {
   int nprimes = 0;
   int * primes = p_get_primes(rinfo->npes, &nprimes);
@@ -811,6 +843,24 @@ static void p_get_best_mpi_dim(
   }
 
   free(primes);
+
+  if (0 == rinfo->rank && opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
+    printf("    global_dims =");
+    for(idx_t m = 0; m < rinfo->nmodes; ++m) {
+      printf(" %g", (double)rinfo->global_dims[m]);
+    }
+    printf("\n");
+    printf("    mpi_dim =");
+    for(int m = 0; m < rinfo->nmodes; ++m) {
+      printf(" %d", rinfo->dims_3d[m]);
+    }
+    printf("\n");
+    printf("    local_dims =");
+    for(idx_t m = 0; m < rinfo->nmodes; ++m) {
+      printf(" %g", (double)rinfo->global_dims[m]/rinfo->dims_3d[m]);
+    }
+    printf("\n");
+  }
 }
 
 
@@ -821,7 +871,8 @@ static void p_get_best_mpi_dim(
 sptensor_t * mpi_tt_read(
   char const * const ifname,
   char const * const pfname,
-  rank_info * const rinfo)
+  rank_info * const rinfo,
+  double const * const opts)
 {
   timer_start(&timers[TIMER_IO]);
   idx_t nmodes;
@@ -838,19 +889,62 @@ sptensor_t * mpi_tt_read(
   /* first compute MPI dimension if not specified by the user */
   if(rinfo->decomp == DEFAULT_MPI_DISTRIBUTION) {
     rinfo->decomp = SPLATT_DECOMP_MEDIUM;
-    p_get_best_mpi_dim(rinfo);
+    p_get_best_mpi_dim(rinfo, opts);
   }
 
-  mpi_setup_comms(rinfo);
+  mpi_setup_comms(rinfo, opts);
 
-  idx_t * ssizes[MAX_NMODES];
-  for(idx_t m=0; m < nmodes; ++m) {
+  idx_t * ssizes[MAX_NMODES]; /* nnz of each slice */
+  /*for(idx_t m=0; m < nmodes; ++m) {
     ssizes[m] = (idx_t *) calloc(rinfo->global_dims[m], sizeof(idx_t));
-  }
+  }*/
+
+  char csf_filename[256];
+  strncpy(csf_filename, ifname, strlen(ifname) - 4);
+  strcpy(csf_filename + strlen(ifname) - 4, ".3.csf");
 
   /* first naively distribute tensor nonzeros for analysis */
+  /*double t = omp_get_wtime();
   sptensor_t * ttbuf = mpi_simple_distribute(ifname, rinfo->comm_3d);
+  if (0 == rinfo->rank) printf("mpi_simple_distribute takes %f\n", omp_get_wtime() - t);
+
+  t = omp_get_wtime();
   p_fill_ssizes(ttbuf, ssizes, rinfo);
+  if (0 == rinfo->rank) printf("p_fill_ssizes takes %f\n", omp_get_wtime() - t);*/
+
+  double t = omp_get_wtime();
+  for(idx_t m=0; m < nmodes; ++m) {
+    ssizes[m] = malloc(rinfo->global_dims[m]*sizeof(idx_t));
+  }
+
+  if (0 == rinfo->rank) {
+    double t = omp_get_wtime();
+    splatt_csf *csf = splatt_malloc(sizeof(splatt_csf)*3);
+    splatt_csf_read(csf, csf_filename, 3);
+    /*idx_t *ssizes2[MAX_NMODES];*/
+    for(int i=0; i < nmodes; ++i) {
+      int m = csf[i].dim_perm[0];
+      assert(m == i);
+      assert(csf[i].pt->nfibs[0] == rinfo->global_dims[m]);
+
+      idx_t *sptr = csf[i].pt->fptr[0];
+      idx_t *fptr = csf[i].pt->fptr[1];
+
+      for(idx_t s=0; s < rinfo->global_dims[m]; ++s) {
+        ssizes[m][s] = fptr[sptr[s+1]] - fptr[sptr[s]];
+        //assert(ssizes2[m][s] == ssizes[m][s]);
+      }
+
+      MPI_Bcast(ssizes[m], rinfo->global_dims[m], SPLATT_MPI_IDX, 0, rinfo->comm_3d);
+    }
+    splatt_free(csf);
+    printf("p_fill_ssizes takes %f\n", omp_get_wtime() - t);
+  }
+  else {
+    for(idx_t m=0; m < nmodes; ++m) {
+      MPI_Bcast(ssizes[m], rinfo->global_dims[m], SPLATT_MPI_IDX, 0, rinfo->comm_3d);
+    }
+  }
 
   /* actually parse tensor */
   sptensor_t * tt = NULL;
@@ -867,21 +961,28 @@ sptensor_t * mpi_tt_read(
     break;
 
   case SPLATT_DECOMP_MEDIUM:
-    tt = p_read_tt_3d(ifname, ssizes, nmodes, rinfo);
+    t = omp_get_wtime();
+    tt = p_read_tt_3d(ifname, ssizes, nmodes, rinfo, opts);
+    if(0 == rinfo->rank) printf("p_read_tt_3d takes %f\n", omp_get_wtime() - t);
+
     /* now map tensor indices to local (layer) coordinates and fill in dims */
+    t = omp_get_wtime();
     for(idx_t m=0; m < nmodes; ++m) {
       free(ssizes[m]);
       tt->dims[m] = rinfo->layer_ends[m] - rinfo->layer_starts[m];
+#pragma omp parallel for
       for(idx_t n=0; n < tt->nnz; ++n) {
         assert(tt->ind[m][n] >= rinfo->layer_starts[m]);
         assert(tt->ind[m][n] < rinfo->layer_ends[m]);
         tt->ind[m][n] -= rinfo->layer_starts[m];
       }
     }
+    if(0 == rinfo->rank) printf("translating coordinates takes %f\n", omp_get_wtime() - t);
     break;
 
   case SPLATT_DECOMP_FINE:
-    tt = p_rearrange_fine(ttbuf, pfname, ssizes, rinfo);
+    assert(0); // TODO
+    //tt = p_rearrange_fine(ttbuf, pfname, ssizes, rinfo);
     /* now fix tt->dims */
     for(idx_t m=0; m < tt->nmodes; ++m) {
       tt->dims[m] = rinfo->global_dims[m];
@@ -890,7 +991,7 @@ sptensor_t * mpi_tt_read(
     break;
   }
 
-  tt_free(ttbuf);
+  //tt_free(ttbuf);
   timer_stop(&timers[TIMER_IO]);
   return tt;
 }
@@ -1155,7 +1256,6 @@ sptensor_t * mpi_simple_distribute(
     p_fill_tt_nnz(fin, tt, my_nnz);
 
     fclose(fin);
-
   } else {
     MPI_Status status;
 

@@ -197,7 +197,8 @@ static void p_setup_fine(
 * @param rinfo MPI rank information to fill in.
 */
 static void p_setup_3d(
-  rank_info * const rinfo)
+  rank_info * const rinfo,
+  double const * const opts)
 {
   int * const dims_3d = rinfo->dims_3d;
   int periods[MAX_NMODES];
@@ -238,6 +239,26 @@ static void p_setup_3d(
 
     assert(rinfo->layer_rank[m] < rinfo->npes / dims_3d[m]);
   }
+
+  if(opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
+    if(0 == rinfo->rank) {
+      printf("    rank\tcart_rank");
+      for(int m=0; m < nmodes; ++m) {
+        printf("\tcoords_3d[%d]:layer_rank[%d]", m, m);
+      }
+      printf("\n");
+    }
+    for(int p=0; p < rinfo->npes; ++p) {
+      MPI_Barrier(MPI_COMM_WORLD);
+      if(p == rinfo->rank) {
+        printf("    %d\t%d", p, rinfo->rank_3d);
+        for(idx_t m=0; m < nmodes; ++m) {
+          printf("\t%d:%d", rinfo->coords_3d[m], rinfo->layer_rank[m]);
+        }
+        printf("\n");
+      }
+    } /* for each rank */
+  } /* opts > SPLATT_VERBOSITY_LOW */
 }
 
 
@@ -262,7 +283,8 @@ void mpi_compute_ineed(
 
 
 void mpi_setup_comms(
-  rank_info * const rinfo)
+  rank_info * const rinfo,
+  double const * const opts)
 {
   rinfo->stats = splatt_malloc(rinfo->npes * sizeof(MPI_Status));
   rinfo->send_reqs = splatt_malloc(rinfo->npes * sizeof(MPI_Request));
@@ -273,7 +295,7 @@ void mpi_setup_comms(
     p_setup_1d(rinfo);
     break;
   case SPLATT_DECOMP_MEDIUM:
-    p_setup_3d(rinfo);
+    p_setup_3d(rinfo, opts);
     break;
   case SPLATT_DECOMP_FINE:
     p_setup_fine(rinfo);

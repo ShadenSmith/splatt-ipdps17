@@ -16,7 +16,7 @@ endif()
 
 find_package(OpenMP REQUIRED)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS} -L/home/jpark103/splatt/src/SpMP -lspmp")
 
 # ALL LIBRARIES -- will concatenate to this
 set(SPLATT_LIBS splatt m rt)
@@ -71,11 +71,12 @@ add_definitions(-D_GNU_SOURCE)
 
 set(C_DEFINES "${C_DEFINES}")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${C_DEFINES}")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -funroll-loops")
+#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
+#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -funroll-loops")
 #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ftree-vectorize")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fstrict-aliasing")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -I/home/jpark103/splatt/src/SpMP -mkl -tbb")
 #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fopt-info-vec")
 #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fopt-info-vec-missed")
 
@@ -97,9 +98,9 @@ else()
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w")
 endif()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -restrict")
+set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -restrict -std=c++0x")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fgnu89-inline")
+#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fgnu89-inline")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 file(GLOB SPLATT_SOURCES src/*.c src/*.cc ${MPI_SOURCES})
@@ -111,9 +112,6 @@ add_subdirectory(include)
 
 # Compile applications
 add_subdirectory(src)
-
-# UNIT TESTS
-add_subdirectory(tests)
 
 # uninstall
 configure_file(

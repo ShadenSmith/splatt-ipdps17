@@ -15,6 +15,8 @@
 
 typedef char MM_typecode[4];
 
+#include "Utils.hpp"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,14 +24,14 @@ extern "C" {
 int mm_is_valid ( MM_typecode matcode );
 int mm_read_banner ( FILE *f, MM_typecode *matcode );
 int mm_read_mtx_array_size ( FILE *f, int *M, int *N );
-int mm_read_mtx_crd(char *fname, int *M, int *N, int *nz, int **I, int **J, 
+int mm_read_mtx_crd(char *fname, int *M, int *N, idx_t *nz, int **I, int **J, 
   double **val, MM_typecode *matcode);
 int mm_read_mtx_crd_data ( FILE *f, int M, int N, int nz, int I[], int J[],
   double val[], MM_typecode matcode );
 int mm_read_mtx_crd_entry ( FILE *f, int *I, int *J, double *real, double *img,
   MM_typecode matcode );
-int mm_read_mtx_crd_size ( FILE *f, int *M, int *N, int *nz );
-int mm_read_unsymmetric_sparse ( const char *fname, int *M_, int *N_, int *nz_,
+int mm_read_mtx_crd_size ( FILE *f, int *M, int *N, idx_t *nz );
+int mm_read_unsymmetric_sparse ( const char *fname, int *M_, int *N_, idx_t *nz_,
   double **val_, int **I_, int **J_ );
 char *mm_strdup ( const char *s );
 char *mm_typecode_to_str ( MM_typecode matcode );

@@ -3,7 +3,7 @@
  * INCLUDES
  *****************************************************************************/
 #include "../splatt_mpi.h"
-
+#include "../util.h"
 
 /******************************************************************************
  * PRIVATE DEFINES
@@ -266,7 +266,7 @@ static void p_distribute_u3_rows(
   idx_t * const pvols,
   idx_t const * const rconns,
   idx_t * const mine,
-  idx_t * const nrows,
+  idx_t * const nrows, /* # of rows claimed locally */
   idx_t const * const inds,
   idx_t const localdim,
   rank_info * const rinfo)
@@ -283,7 +283,8 @@ static void p_distribute_u3_rows(
   idx_t const dim = rinfo->layer_ends[m] - rinfo->layer_starts[m];
 
   /* mark if row claimed[i] has been claimed */
-  char * claimed = (char *) calloc(dim, sizeof(char));
+  char * claimed = (char *) splatt_malloc(dim * sizeof(char));
+  par_memset(claimed, 0, sizeof(char)*dim);
 
   /* a list of all rows I just claimed */
   idx_t * myclaims = (idx_t *) splatt_malloc(left * sizeof(idx_t));
@@ -292,6 +293,7 @@ static void p_distribute_u3_rows(
   idx_t * bufclaims = (idx_t *) splatt_malloc(left * sizeof(idx_t));
 
   /* mark the rows already claimed */
+#pragma omp parallel for
   for(idx_t i=0; i < *nrows; ++i) {
     assert(mine[i] < dim);
     claimed[mine[i]] = 1;
@@ -312,6 +314,11 @@ static void p_distribute_u3_rows(
   while(1) {
     if(rank == 0) {
       newp = p_make_job(npes, newp, pvols, rinfo, comm, mustclaim, left);
+      /*printf("pvols =");
+      for(int p=0; p < npes; ++p) {
+        printf("\t%"SPLATT_PF_IDX, pvols[p]);
+      }
+      printf("\n");*/
     }
 
     MPI_Recv(&msg, 1, MPI_INT, 0, 0, comm, &(rinfo->status));
@@ -340,7 +347,13 @@ static void p_distribute_u3_rows(
     if(rank == 0) {
       amt = p_check_job(npes, pvols, rinfo, comm, bufclaims, &left);
       /* force claim next turn if no progress made this time */
-      mustclaim = (amt > 0);
+      mustclaim = amt == 0;
+      /*if (mustclaim) {
+        printf("mustclaim\n");
+      }
+      else {
+        printf("tryclaim\n");
+      }*/
     }
 
     MPI_Recv(&msg, 1, MPI_INT, 0, 0, comm, &(rinfo->status));
@@ -350,6 +363,7 @@ static void p_distribute_u3_rows(
       MPI_Bcast(bufclaims, amt, SPLATT_MPI_IDX, 0, comm);
 
       /* mark as claimed */
+#pragma omp parallel for
       for(idx_t i=0; i < amt; ++i) {
         claimed[bufclaims[i]] = 1;
       }
@@ -389,8 +403,11 @@ static void p_fill_volume_stats(
   idx_t * const rconns)
 {
   /* count u=1; u=2, u > 2 */
-  rconns[0] = rconns[1] = rconns[2] = 0;
   int tot = 0;
+  idx_t rconns0 = 0;
+  idx_t rconns2 = 0;
+
+#pragma omp parallel for reduction(+:rconns0,rconns2)
   for(idx_t i=0; i < ldim; ++i) {
 
 #ifdef DEBUG
@@ -409,15 +426,18 @@ static void p_fill_volume_stats(
       /* this only happens with empty slices */
       break;
     case 1:
-      rconns[0] += 1;
+      rconns0 += 1;
       break;
     case 2:
       //rconns[1] += 1;
     default:
-      rconns[2] += 1;
+      rconns2 += 1;
       break;
     }
   }
+
+  rconns[0] = rconns0;
+  rconns[2] = rconns2;
 }
 
 
@@ -463,10 +483,11 @@ static void p_greedy_mat_distribution(
     idx_t localdim;
     idx_t * inds = tt_get_slices(tt, m, &localdim);
 
-    memset(pcount, 0, layerdim * sizeof(int));
-    memset(mine, 0, layerdim * sizeof(idx_t));
+    par_memset(pcount, 0, layerdim * sizeof(int));
+    par_memset(mine, 0, layerdim * sizeof(idx_t));
 
     /* mark all idxs that are local to me */
+#pragma omp parallel for
     for(idx_t i=0; i < localdim; ++i) {
       pcount[inds[i]] = 1;
     }
@@ -496,8 +517,22 @@ static void p_greedy_mat_distribution(
     }
 
     /* get size of layer and allocate volumes */
-    MPI_Comm_size(rinfo->layer_comm[m], &lnpes);
+    int lnpes = rinfo->layer_size[m];
     pvols = (idx_t *) splatt_malloc(lnpes * sizeof(idx_t));
+
+    /* print out # of rows that are entirely local to me */
+    /*for(int l=0; l < rinfo->dims_3d[m]; ++l) {
+      MPI_Barrier(MPI_COMM_WORLD);
+      if(rinfo->coords_3d[m] == l) {
+        if(0 == rinfo->layer_rank[m]) printf("%d:\n", l);
+        for(int p=0; p < rinfo->layer_size[m]; ++p) {
+          MPI_Barrier(rinfo->layer_comm[m]);
+          if(rinfo->layer_rank[m] == p) {
+            printf("\t%"SPLATT_PF_IDX":%"SPLATT_PF_IDX"\n", nrows, localdim);
+          }
+        }
+      }
+    }*/
 
     /* root process gathers all communication volumes */
     MPI_Gather(&myvol, 1, SPLATT_MPI_IDX, pvols, 1, SPLATT_MPI_IDX,
@@ -518,7 +553,8 @@ static void p_greedy_mat_distribution(
      * newlabels[newindex] = oldindex */
     idx_t * const newlabels = perm->iperms[m];
     idx_t * const inewlabels = perm->perms[m];
-    memset(newlabels, 0, layerdim * sizeof(idx_t));
+    par_memset(newlabels, 0, layerdim * sizeof(idx_t));
+#pragma omp parallel for
     for(idx_t i=0; i < nrows; ++i) {
       assert(rowoffset+i < layerdim);
       assert(mine[i] < layerdim);
@@ -529,6 +565,7 @@ static void p_greedy_mat_distribution(
         rinfo->layer_comm[m]);
 
     /* fill perm: inewlabels[oldlayerindex] = newlayerindex */
+#pragma omp parallel for
     for(idx_t i=0; i < layerdim; ++i) {
       assert(newlabels[i] < layerdim);
       inewlabels[newlabels[i]] = i;

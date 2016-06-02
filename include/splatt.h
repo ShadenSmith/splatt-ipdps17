@@ -77,7 +77,7 @@
  *****************************************************************************/
 #define SPLATT_VER_MAJOR     1
 #define SPLATT_VER_MINOR     1
-#define SPLATT_VER_SUBMINOR  0
+#define SPLATT_VER_SUBMINOR  1
 
 
 
@@ -161,6 +161,8 @@ typedef enum
   SPLATT_CSF_ONEMODE, /** Only allocate one CSF for factorization. */
   SPLATT_CSF_TWOMODE, /** Allocate one for the smallest and largest modes. */
   SPLATT_CSF_ALLMODE, /** Allocate one CSF for every mode. */
+  SPLATT_CSF_ALLMODE_ROUND_ROBIN, /** Allocate one CSF for every mode. */
+  SPLATT_CSF_ALLPERMUTE, /** Allocate one CSF for all possible permutation. */
 } splatt_csf_type;
 
 

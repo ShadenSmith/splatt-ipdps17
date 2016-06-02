@@ -11,10 +11,10 @@
 #include <omp.h>
 #ifdef __INTEL_COMPILER
 #include <immintrin.h>
-//#define SPLATT_INTRINSIC // use intrinsic
+#define SPLATT_INTRINSIC // use intrinsic
 #endif
 #include <unistd.h>
-#define SPLATT_SIM_CACHE
+//#define SPLATT_SIM_CACHE
 #ifdef SPLATT_SIM_CACHE
 #include "gathertool.h"
 #endif
@@ -90,13 +90,13 @@ int splatt_mttkrp(
   /* fill matrix pointers  */
   matrix_t * mats[MAX_NMODES+1];
   for(idx_t m=0; m < nmodes; ++m) {
-    mats[m] = (matrix_t *) malloc(sizeof(matrix_t));
+    mats[m] = (matrix_t *) splatt_malloc(sizeof(matrix_t));
     mats[m]->I = tensors->dims[m];
     mats[m]->J = ncolumns,
     mats[m]->rowmajor = 1;
     mats[m]->vals = matrices[m];
   }
-  mats[MAX_NMODES] = (matrix_t *) malloc(sizeof(matrix_t));
+  mats[MAX_NMODES] = (matrix_t *) splatt_malloc(sizeof(matrix_t));
   mats[MAX_NMODES]->I = tensors->dims[mode];
   mats[MAX_NMODES]->J = ncolumns;
   mats[MAX_NMODES]->rowmajor = 1;
@@ -349,7 +349,7 @@ static void p_csf_mttkrp_root_tiled3(
   }
 }
 
-#define SPLATT_MEASURE_LOAD_BALANCE
+//#define SPLATT_MEASURE_LOAD_BALANCE
 #ifdef SPLATT_MEASURE_LOAD_BALANCE
 double barrierTimes[1024];
 #endif
@@ -635,7 +635,7 @@ static void p_csf_mttkrp_root3(
   }
 
   timer_stop(&time);
-  if (0 == omp_get_thread_num() && 
+  /*if (0 == omp_get_thread_num() && 
       opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
 
     idx_t bdim = ct->dims[ct->dim_perm[1]];
@@ -646,7 +646,7 @@ static void p_csf_mttkrp_root3(
 
     printf("       p_csf_mttkrp_root3 (%0.3fs, %.3f GBps)\n",
         time.seconds, gbps);
-  }
+  }*/
 }
 
 #ifdef SPLATT_ATOMIC_CACHE
@@ -2405,7 +2405,7 @@ void mttkrp_stream(
 
   idx_t const nmodes = tt->nmodes;
 
-  val_t * accum = (val_t *) malloc(nfactors * sizeof(val_t));
+  val_t * accum = (val_t *) splatt_malloc(nfactors * sizeof(val_t));
 
   val_t * mvals[MAX_NMODES];
   for(idx_t m=0; m < nmodes; ++m) {

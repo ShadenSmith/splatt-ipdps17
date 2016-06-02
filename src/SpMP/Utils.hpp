@@ -17,10 +17,10 @@
 #define FREE(x) { if (x) _mm_free(x); x = NULL; }
 #define MALLOC(type, len) (type *)_mm_malloc(sizeof(type)*(len), 64)
 
+typedef uint64_t idx_t;
+
 namespace SpMP
 {
-
-typedef uint64_t idx_t;
 
 /**
  * Measure CPU frequency by __rdtsc a compute intensive loop.
@@ -91,6 +91,7 @@ void getInversePerm(int *inversePerm, const int *perm, int n);
  * @note must be called inside an omp region
  */
 void prefixSum(int *inOut, int *sum, int *workspace);
+void prefixSum(idx_t *inOut, idx_t *sum, idx_t *workspace);
 /**
  * workspace[n*tid:n*(tid+1)-1] contains results for tid
  *

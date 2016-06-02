@@ -51,7 +51,7 @@ public:
 
   // Following two constructors will make CSR own the data
   CSR(const char *file, int base = 0, bool forceSymmetric = false, int pad = 1);
-  CSR(int m, int n, int nnz);
+  CSR(int m, int n, idx_t nnz);
   CSR(const CSR& A);
 
   // Following constructor will make CSR does not own the data
@@ -151,7 +151,7 @@ public:
   void make0BasedIndexing();
   void make1BasedIndexing();
 
-  void alloc(int m, int nnz, bool createSeparateDiagData = true);
+  void alloc(int m, idx_t nnz, bool createSeparateDiagData = true);
   void dealloc();
 
   bool useMemoryPool_() const;

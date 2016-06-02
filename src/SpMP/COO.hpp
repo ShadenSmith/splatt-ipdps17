@@ -33,7 +33,7 @@ class COO { // one-based index
 public:
   int m;
   int n;
-  int nnz;
+  idx_t nnz;
   int *rowidx;
   int *colidx;
   double *values;

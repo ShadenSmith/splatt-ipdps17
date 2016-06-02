@@ -3,7 +3,8 @@
 namespace SpMP
 {
 
-void prefixSum(int *in_out, int *sum, int *workspace)
+template<typename T>
+void prefixSum_(T *in_out, T *sum, T *workspace)
 {
   int nthreads = omp_get_num_threads();
   int tid = omp_get_thread_num();
@@ -23,6 +24,16 @@ void prefixSum(int *in_out, int *sum, int *workspace)
 #pragma omp barrier
 
   *in_out = workspace[tid];
+}
+
+void prefixSum(int *in_out, int *sum, int *workspace)
+{
+  prefixSum_(in_out, sum, workspace);
+}
+
+void prefixSum(idx_t *in_out, idx_t *sum, idx_t *workspace)
+{
+  prefixSum_(in_out, sum, workspace);
 }
 
 void prefixSumMultiple(int *in_out, int *sum, int n, int *workspace)

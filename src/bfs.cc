@@ -14,12 +14,14 @@
 using namespace std;
 using namespace SpMP;
 
-permutation_t *perm_bfs(sptensor_t * const tt)
+permutation_t *perm_bfs_or_rcm(sptensor_t * const tt, int use_rcm)
 {
   permutation_t *perm = perm_alloc(tt->dims, tt->nmodes);
 
 #define SPLATT_FIBER_BASED_BFS
 #ifdef SPLATT_FIBER_BASED_BFS
+  // (i1, i2) when i1 and i2 appear in a same fiber
+
   double *opts = splatt_default_opts();
   opts[SPLATT_OPTION_CSF_ALLOC] = SPLATT_CSF_ALLMODE_ROUND_ROBIN;
   splatt_csf *csf = splatt_csf_alloc(tt, opts);
@@ -99,7 +101,12 @@ permutation_t *perm_bfs(sptensor_t * const tt)
 
     int *temp_perm = new int[A.m];
     int *temp_iperm = new int[A.m];
-    A.getBFSPermutation(temp_perm, temp_iperm);
+    if (use_rcm) {
+      A.getRCMPermutation(temp_perm, temp_iperm);
+    }
+    else {
+      A.getBFSPermutation(temp_perm, temp_iperm);
+    }
 
     printf("%s:%d %f\n", __FILE__, __LINE__, omp_get_wtime() - t);
     t = omp_get_wtime();
@@ -267,4 +274,14 @@ permutation_t *perm_bfs(sptensor_t * const tt)
   perm_apply(tt, perm->perms);
 
   return perm;
+}
+
+permutation_t *perm_bfs(sptensor_t * const tt)
+{
+  return perm_bfs_or_rcm(tt, 0);
+}
+
+permutation_t *perm_rcm(sptensor_t * const tt)
+{
+  return perm_bfs_or_rcm(tt, 1);
 }

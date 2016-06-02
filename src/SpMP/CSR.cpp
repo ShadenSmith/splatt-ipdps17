@@ -30,6 +30,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <omp.h>
 
 #include "CSR.hpp"
+#include "COO.hpp"
 #include "mm_io.h"
 #include "Utils.hpp"
 #include "MemoryPool.hpp"
@@ -48,7 +49,7 @@ CSR::CSR() : rowptr(NULL), colidx(NULL), values(NULL), idiag(NULL), diag(NULL), 
 {
 }
 
-void CSR::alloc(int m, int nnz, bool createSeparateDiagData /*= true*/)
+void CSR::alloc(int m, idx_t nnz, bool createSeparateDiagData /*= true*/)
 {
   this->m = m;
 
@@ -72,7 +73,7 @@ void CSR::alloc(int m, int nnz, bool createSeparateDiagData /*= true*/)
   ownData_ = true;
 }
 
-CSR::CSR(int m, int n, int nnz)
+CSR::CSR(int m, int n, idx_t nnz)
  : m(m), n(n), extptr(NULL)
 {
   alloc(m, nnz);
@@ -95,6 +96,31 @@ CSR::CSR(const CSR& A) : m(A.m), n(A.n), values(NULL), idiag(NULL), diag(NULL), 
   if (diagptr) copyVector(diagptr, A.diagptr, m);
   if (idiag) copyVector(idiag, A.idiag, m);
   if (diag) copyVector(diag, A.diag, m);
+}
+
+CSR::CSR(const char *fileName, int base /*=0*/, bool forceSymmetric /*=false*/, int pad /*=1*/)
+ : rowptr(NULL), colidx(NULL), values(NULL), ownData_(true), idiag(NULL), diag(NULL), diagptr(NULL), extptr(NULL)
+{
+  int m = atoi(fileName);
+  char buf[1024];
+  sprintf(buf, "%d", m);
+
+  int l = strlen(fileName);
+
+  /*if (!strcmp(buf, fileName)) {
+    generate3D27PtLaplacian(this, m, base);
+  }
+  else if (l > 4 && !strcmp(fileName + l - 4, ".bin")) {
+    loadBin(fileName, base);
+  }
+  else */{
+    COO Acoo;
+    loadMatrixMarket((char *)fileName, Acoo, forceSymmetric, pad);
+
+    alloc(Acoo.m, Acoo.nnz);
+
+    dcoo2csr(this, &Acoo, base);
+  }
 }
 
 CSR::CSR(int m, int n, idx_t *rowptr, int *colidx, double *values) :

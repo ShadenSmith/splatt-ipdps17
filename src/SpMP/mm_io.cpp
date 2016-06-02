@@ -222,7 +222,7 @@ int mm_read_mtx_array_size ( FILE *f, int *M, int *N )
 }
 /******************************************************************************/
 
-int mm_read_mtx_crd(char *fname, int *M, int *N, int *nz, int **I, int **J, 
+int mm_read_mtx_crd(char *fname, int *M, int *N, idx_t *nz, int **I, int **J, 
         double **val, MM_typecode *matcode)
 
 /******************************************************************************/
@@ -401,7 +401,7 @@ int mm_read_mtx_crd_entry(FILE *f, int *I, int *J,
 }
 /******************************************************************************/
 
-int mm_read_mtx_crd_size(FILE *f, int *M, int *N, int *nz )
+int mm_read_mtx_crd_size(FILE *f, int *M, int *N, idx_t *nz )
 
 /******************************************************************************/
 /*
@@ -449,7 +449,7 @@ int mm_read_mtx_crd_size(FILE *f, int *M, int *N, int *nz )
 /* 
   line[] is either blank or has M,N, nz 
 */
-  if (sscanf(line, "%d %d %d", M, N, nz) == 3)
+  if (sscanf(line, "%d %d %ld", M, N, nz) == 3)
   {
     return 0;
   }
@@ -457,7 +457,7 @@ int mm_read_mtx_crd_size(FILE *f, int *M, int *N, int *nz )
   {
     do
     { 
-      num_items_read = fscanf(f, "%d %d %d", M, N, nz); 
+      num_items_read = fscanf(f, "%d %d %ld", M, N, nz); 
       if (num_items_read == EOF) 
       {
         return MM_PREMATURE_EOF;
@@ -468,7 +468,7 @@ int mm_read_mtx_crd_size(FILE *f, int *M, int *N, int *nz )
 }
 /******************************************************************************/
 
-int mm_read_unsymmetric_sparse(const char *fname, int *M_, int *N_, int *nz_,
+int mm_read_unsymmetric_sparse(const char *fname, int *M_, int *N_, idx_t *nz_,
                 double **val_, int **I_, int **J_)
 
 /******************************************************************************/
@@ -484,7 +484,8 @@ int mm_read_unsymmetric_sparse(const char *fname, int *M_, int *N_, int *nz_,
 {
     FILE *f;
     MM_typecode matcode;
-    int M, N, nz;
+    int M, N;
+    idx_t nz;
     int i;
     double *val;
     int *I, *J;

@@ -30,7 +30,7 @@ static void p_reorder_slices(
   /* build map of fiber -> slice */
   idx_t const nslices = ft->dims[mode];
   idx_t const nfibs = ft->nfibs;
-  idx_t * slice = (idx_t *) malloc(nfibs * sizeof(idx_t));
+  idx_t * slice = (idx_t *) splatt_malloc(nfibs * sizeof(idx_t));
 
   idx_t * const sliceperm  = perm->perms[mode];
   idx_t * const sliceiperm = perm->iperms[mode];
@@ -276,7 +276,7 @@ permutation_t * tt_perm(
 {
   timer_start(&timers[TIMER_REORDER]);
 
-  if(type != PERM_RAND && type != PERM_BFS && pfile == NULL) {
+  if(type != PERM_RAND && type != PERM_BFS && type != PERM_RCM && type != PERM_MATCHING && pfile == NULL) {
     fprintf(stderr, "SPLATT: permutation file must be supplied for now.\n");
     exit(1);
   }
@@ -309,6 +309,15 @@ permutation_t * tt_perm(
   case PERM_BFS:
     perm = perm_bfs(tt);
     break;
+
+  case PERM_RCM:
+    perm = perm_rcm(tt);
+    break;
+
+  case PERM_MATCHING:
+    perm = perm_matching(tt);
+    break;
+
   default:
     break;
   }
@@ -340,7 +349,7 @@ void build_pptr(
     saved = tmp;
   }
 
-  idx_t * plookup = (idx_t *) malloc(nvtxs * sizeof(idx_t));
+  idx_t * plookup = (idx_t *) splatt_malloc(nvtxs * sizeof(idx_t));
   for(idx_t f=0; f < nvtxs; ++f) {
     idx_t const index = pptr[1+parts[f]]++;
     plookup[index] = f;
@@ -359,6 +368,7 @@ void perm_apply(
   for(idx_t m=0; m < tt->nmodes; ++m) {
     idx_t * const ind = tt->ind[m];
     idx_t const * const p = perm[m];
+#pragma omp parallel for
     for(idx_t n=0; n < nnz; ++n) {
       ind[n] = p[ind[n]];
     }
@@ -472,6 +482,7 @@ permutation_t * perm_identity(
 {
   permutation_t * perm = perm_alloc(dims, nmodes);
   for(idx_t m=0; m < nmodes; ++m) {
+#pragma omp parallel for
     for(idx_t i=0; i < dims[m]; ++i) {
       perm->perms[m][i] = i;
       perm->iperms[m][i] = i;
@@ -485,11 +496,11 @@ permutation_t * perm_alloc(
   idx_t const * const dims,
   idx_t const nmodes)
 {
-  permutation_t * perm = (permutation_t *) malloc(sizeof(permutation_t));
+  permutation_t * perm = (permutation_t *) splatt_malloc(sizeof(permutation_t));
 
   for(idx_t m=0; m < nmodes; ++m) {
-    perm->perms[m]  = (idx_t *) malloc(dims[m] * sizeof(idx_t));
-    perm->iperms[m] = (idx_t *) malloc(dims[m] * sizeof(idx_t));
+    perm->perms[m]  = (idx_t *) splatt_malloc(dims[m] * sizeof(idx_t));
+    perm->iperms[m] = (idx_t *) splatt_malloc(dims[m] * sizeof(idx_t));
   }
   for(idx_t m=nmodes; m < MAX_NMODES; ++m ) {
     perm->perms[m]  = NULL;

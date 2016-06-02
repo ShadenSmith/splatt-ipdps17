@@ -320,7 +320,6 @@ double cpd_als_iterate(
       calc_gram_inv(m, nmodes, aTa);
 
       /* A = M1 * M2 */
-      par_memset(mats[m]->vals, 0, mats[m]->I * nfactors * sizeof(val_t));
       mat_matmul(m1, aTa[MAX_NMODES], mats[m]);
 
       /* normalize columns and extract lambda */
@@ -344,7 +343,7 @@ double cpd_als_iterate(
           it+1, itertime.seconds, fit, fit - oldfit);
       if(opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
         for(idx_t m=0; m < nmodes; ++m) {
-          printf("     mode = %1"SPLATT_PF_IDX" (%0.3fs)\n", m+1,
+          printf("    mode = %1"SPLATT_PF_IDX" (%0.3fs)\n", m+1,
               modetime[m].seconds);
         }
       }
