@@ -12,6 +12,12 @@
 #include <math.h>
 #include <omp.h>
 
+#ifdef __AVX512F__
+//#define HBW_ALLOC
+#endif
+#ifdef HBW_ALLOC
+#include <hbwmalloc.h>
+#endif
 
 /******************************************************************************
  * PRIVATE FUNCTIONS
@@ -572,7 +578,11 @@ matrix_t * mat_alloc(
   matrix_t * mat = (matrix_t *) splatt_malloc(sizeof(matrix_t));
   mat->I = nrows;
   mat->J = ncols;
+#ifdef HBW_ALLOC
+  hbw_posix_memalign((void **)&mat->vals, 4096, nrows * ncols * sizeof(val_t));
+#else
   mat->vals = (val_t *) splatt_malloc(nrows * ncols * sizeof(val_t));
+#endif
   mat->rowmajor = 1;
   return mat;
 }
@@ -592,7 +602,11 @@ matrix_t * mat_rand(
 void mat_free(
   matrix_t * mat)
 {
+#ifdef HBW_ALLOC
+  hbw_free(mat->vals);
+#else
   free(mat->vals);
+#endif
   free(mat);
 }
 
