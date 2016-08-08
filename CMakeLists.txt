@@ -43,7 +43,12 @@ if (DEFINED DEBUG)
 else()
   message("Building in RELEASE mode.")
   set(CMAKE_BUILD_TYPE Release)
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -xHost")
+  if (DEFINED KNL)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -xMIC-AVX512 -I/swtools/memkind/latest/include")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L/swtools/memkind/latest/lib -lmemkind")
+  else()
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -xHost")
+  endif()
 endif()
 
 # check for MT-Metis support
