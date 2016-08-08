@@ -18,9 +18,9 @@ static char convert_doc[] =
   "  fibmat\t\tCSR matrix whose rows are fibers\n"
   "Mode-independent conversion types are:\n"
   "  graph\t\tTri-partite graph model\n"
-  "  splatt\t\tDefault SPLATT format\n"
+  "  coo\t\tDefault coordinate format\n"
   "  csf\t\tCompressed sparse fiber format\n"
-  "  bin\t\tBinary format\n";
+  "  bin\t\tBinary coordinate format\n";
 
 typedef struct
 {
@@ -60,8 +60,8 @@ static error_t parse_convert_opt(
       args->type = CNV_FIB_SPMAT;
     } else if(strcmp(arg, "bin") == 0) {
       args->type = CNV_BINARY;
-    } else if(strcmp(arg, "splatt") == 0) {
-      args->type = CNV_SPLATT;
+    } else if(strcmp(arg, "coo") == 0) {
+      args->type = CNV_COORD;
     } else if(strcmp(arg, "csf") == 0) {
       args->type = CNV_CSF;
     }
