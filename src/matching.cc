@@ -82,9 +82,9 @@ void populate_histogram(int *hist, const splatt_csf *csf, int m1, idx_t s)
     assert(!tile1->fids[0] && !tile2->fids[0]);
 
     idx_t *sptr1 = tile1->fptr[0];
-    idx_t *fids1 = tile1->fids[1];
+    fidx_t *fids1 = tile1->fids[1];
     idx_t *sptr2 = tile2->fptr[0];
-    idx_t *fids2 = tile2->fids[1];
+    fidx_t *fids2 = tile2->fids[1];
 
     // for each fiber (s, fids1[f1], *)
 #pragma omp parallel for
@@ -137,7 +137,7 @@ void populate_histogram_sample(int *hist, const splatt_csf *csf, int m1, idx_t s
     assert(!tile1->fids[0] && !tile2->fids[0]);
 
     idx_t *sptr1 = tile1->fptr[0];
-    idx_t *fids1 = tile1->fids[1];
+    fidx_t *fids1 = tile1->fids[1];
     idx_t *sptr2 = tile2->fptr[0];
 
     for(int f = sptr1[s]; f < sptr1[s+1]; ++f) {
@@ -184,9 +184,9 @@ void populate_histogram_sample(int *hist, const splatt_csf *csf, int m1, idx_t s
     assert(!tile1->fids[0] && !tile2->fids[0]);
 
     idx_t *sptr1 = tile1->fptr[0];
-    idx_t *fids1 = tile1->fids[1];
+    fidx_t *fids1 = tile1->fids[1];
     idx_t *sptr2 = tile2->fptr[0];
-    idx_t *fids2 = tile2->fids[1];
+    fidx_t *fids2 = tile2->fids[1];
 
     // for each fiber (s, fids1[f1], *)
 #pragma omp parallel for
@@ -334,9 +334,9 @@ void populate_histogram_reduction(int *hist, const splatt_csf *csf, int m1, idx_
     assert(!tile1->fids[0] && !tile2->fids[0]);
 
     idx_t *sptr1 = tile1->fptr[0];
-    idx_t *fids1 = tile1->fids[1];
+    fidx_t *fids1 = tile1->fids[1];
     idx_t *sptr2 = tile2->fptr[0];
-    idx_t *fids2 = tile2->fids[1];
+    fidx_t *fids2 = tile2->fids[1];
 
     /*int cnt = 0;
     for(idx_t f1 = sptr1[s]; f1 < sptr1[s+1]; ++f1) {

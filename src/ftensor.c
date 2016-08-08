@@ -24,7 +24,7 @@ static void p_create_fptr(
   idx_t const nmodes = tt->nmodes;
 
   /* permuted tt->ind makes things a bit easier */
-  idx_t * ttinds[MAX_NMODES];
+  fidx_t * ttinds[MAX_NMODES];
   for(idx_t m=0; m < nmodes; ++m) {
     ttinds[m] = tt->ind[ft->dim_perm[m]];
   }
@@ -187,7 +187,7 @@ static void p_create_sliceptr(
   ft->nslcs = nslices;
 
   /* permuted tt->ind makes things a bit easier */
-  idx_t * ttinds[MAX_NMODES];
+  fidx_t * ttinds[MAX_NMODES];
   for(idx_t m=0; m < nmodes; ++m) {
     ttinds[m] = tt->ind[ft->dim_perm[m]];
   }

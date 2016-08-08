@@ -88,7 +88,7 @@ void splatt_check(
 
       /* write maps to file if present */
       for(idx_t m=0; m < tt->nmodes; ++m) {
-        idx_t const * const map = tt->indmap[m];
+        fidx_t const * const map = tt->indmap[m];
         if(map != NULL) {
           char * buf = NULL;
           if(asprintf(&buf, "mode%"SPLATT_PF_IDX".map", m+1) == -1) {
@@ -97,7 +97,7 @@ void splatt_check(
           }
           FILE * fout = fopen(buf, "w");
           for(idx_t i=0; i < tt->dims[m]; ++i) {
-            fprintf(fout, "%"SPLATT_PF_IDX"\n", 1+map[i]);
+            fprintf(fout, "%"SPLATT_PF_FIDX"\n", 1+map[i]);
           }
           fclose(fout);
           free(buf);

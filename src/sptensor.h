@@ -30,13 +30,13 @@ typedef struct
   idx_t nmodes;   /** The number of modes in the tensor, denoted 'm'. */
   idx_t nnz;      /** The number of nonzeros in the tensor. */
   idx_t * dims;   /** An array containing the dimension of each mode. */
-  idx_t ** ind;   /** An m x nnz matrix containing the coordinates of each
+  fidx_t ** ind;   /** An m x nnz matrix containing the coordinates of each
                       nonzero. The nth nnz is accessed via ind[0][n], ind[1][n],
                       ..., ind[m][n]. */
   val_t * vals;   /** An array containing the values of each nonzero. */
   int tiled;      /** Whether sptensor_t has been tiled. Used by ftensor_t. */
 
-  idx_t * indmap[MAX_NMODES]; /** Maps local -> global indices. */
+  fidx_t * indmap[MAX_NMODES]; /** Maps local -> global indices. */
 } sptensor_t;
 
 
@@ -84,7 +84,7 @@ void tt_fill(
   sptensor_t * const tt,
   idx_t const nnz,
   idx_t const nmodes,
-  idx_t ** const inds,
+  fidx_t ** const inds,
   val_t * const vals);
 
 

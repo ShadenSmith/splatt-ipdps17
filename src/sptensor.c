@@ -11,6 +11,12 @@
 
 #include <math.h>
 
+#ifdef __AVX512F__
+//#define HBW_ALLOC
+#endif
+#ifdef HBW_ALLOC
+#include <hbwmalloc.h>
+#endif
 
 /******************************************************************************
  * PRIVATE FUNCTONS
@@ -76,7 +82,7 @@ idx_t * tt_get_slices(
   idx_t maxidx = 0;
 
   idx_t const nnz = tt->nnz;
-  idx_t const * const inds = tt->ind[m];
+  fidx_t const * const inds = tt->ind[m];
 
   /* find maximum number of uniques */
 #pragma omp parallel for reduction(min:minidx), reduction(max:maxidx)
@@ -191,7 +197,7 @@ idx_t tt_remove_empty(
       }
     }
 
-    tt->indmap[m] = (idx_t *) splatt_malloc(dim_sizes[m] * sizeof(idx_t));
+    tt->indmap[m] = (fidx_t *) splatt_malloc(dim_sizes[m] * sizeof(fidx_t));
 
     /* relabel all indices in mode m */
     tt->dims[m] = dim_sizes[m];
@@ -238,17 +244,28 @@ sptensor_t * tt_alloc(
   tt->tiled = SPLATT_NOTILE;
 
   tt->nnz = nnz;
+#ifdef HBW_ALLOC
+  hbw_posix_memalign((void **)&tt->vals, 4096, nnz * sizeof(val_t));
+#else
   tt->vals = (val_t*) splatt_malloc(nnz * sizeof(val_t));
+#endif
 
   tt->nmodes = nmodes;
   tt->type = (nmodes == 3) ? SPLATT_3MODE : SPLATT_NMODE;
 
   tt->dims = (idx_t*) splatt_malloc(nmodes * sizeof(idx_t));
-  tt->ind = (idx_t**) splatt_malloc(nmodes * sizeof(idx_t*));
+  tt->ind = (fidx_t**) splatt_malloc(nmodes * sizeof(fidx_t*));
+#ifdef HBW_ALLOC
   for(idx_t m=0; m < nmodes; ++m) {
-    tt->ind[m] = (idx_t*) splatt_malloc(nnz * sizeof(idx_t));
+    hbw_posix_memalign((void **)&tt->ind[m], 4096, nnz * sizeof(fidx_t));
     tt->indmap[m] = NULL;
   }
+#else
+  for(idx_t m=0; m < nmodes; ++m) {
+    tt->ind[m] = (fidx_t*) splatt_malloc(nnz * sizeof(fidx_t));
+    tt->indmap[m] = NULL;
+  }
+#endif
 
   return tt;
 }
@@ -258,7 +275,7 @@ void tt_fill(
   sptensor_t * const tt,
   idx_t const nnz,
   idx_t const nmodes,
-  idx_t ** const inds,
+  fidx_t ** const inds,
   val_t * const vals)
 {
   tt->tiled = SPLATT_NOTILE;
@@ -287,13 +304,21 @@ void tt_free(
 {
   tt->nnz = 0;
   for(idx_t m=0; m < tt->nmodes; ++m) {
+#ifdef HBW_ALLOC
+    hbw_free(tt->ind[m]);
+#else
     free(tt->ind[m]);
+#endif
     free(tt->indmap[m]);
   }
   tt->nmodes = 0;
   free(tt->dims);
   free(tt->ind);
+#ifdef HBW_ALLOC
+  hbw_free(tt->vals);
+#else
   free(tt->vals);
+#endif
   free(tt);
 }
 

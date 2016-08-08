@@ -9,6 +9,12 @@
 #include "timer.h"
 #include "util.h"
 
+#ifdef __AVX512F__
+//#define HBW_ALLOC
+#endif
+#ifdef HBW_ALLOC
+#include <hbwmalloc.h>
+#endif
 
 /******************************************************************************
  * DEFINES
@@ -35,9 +41,9 @@
 * @return Returns -1 if ind[i] < j, 1 if ind[i] > j, and 0 if they are equal.
 */
 static inline int p_ttqcmp3(
-  idx_t const * const ind0,
-  idx_t const * const ind1,
-  idx_t const * const ind2,
+  fidx_t const * const ind0,
+  fidx_t const * const ind1,
+  fidx_t const * const ind2,
   idx_t const i,
   idx_t const j[3])
 {
@@ -74,9 +80,9 @@ static inline int p_ttqcmp3(
 *         are equal.
 */
 static inline int p_ttcmp3(
-  idx_t const * const ind0,
-  idx_t const * const ind1,
-  idx_t const * const ind2,
+  fidx_t const * const ind0,
+  fidx_t const * const ind1,
+  fidx_t const * const ind2,
   idx_t const i,
   idx_t const j)
 {
@@ -109,8 +115,8 @@ static inline int p_ttcmp3(
 * @return Returns -1 if ind[i] < j, 1 if ind[i] > j, and 0 if they are equal.
 */
 static inline int p_ttqcmp2(
-  idx_t const * const ind0,
-  idx_t const * const ind1,
+  fidx_t const * const ind0,
+  fidx_t const * const ind1,
   idx_t const i,
   idx_t const j[2])
 {
@@ -141,8 +147,8 @@ static inline int p_ttqcmp2(
 *         are equal.
 */
 static inline int p_ttcmp2(
-  idx_t const * const ind0,
-  idx_t const * const ind1,
+  fidx_t const * const ind0,
+  fidx_t const * const ind1,
   idx_t const i,
   idx_t const j)
 {
@@ -254,9 +260,9 @@ static void p_tt_insertionsort3(
   idx_t const start,
   idx_t const end)
 {
-  idx_t * const ind0 = tt->ind[cmplt[0]];
-  idx_t * const ind1 = tt->ind[cmplt[1]];
-  idx_t * const ind2 = tt->ind[cmplt[2]];
+  fidx_t * const ind0 = tt->ind[cmplt[0]];
+  fidx_t * const ind1 = tt->ind[cmplt[1]];
+  fidx_t * const ind2 = tt->ind[cmplt[2]];
   val_t * const vals = tt->vals;
 
   val_t vbuf;
@@ -274,13 +280,13 @@ static void p_tt_insertionsort3(
     memmove(vals+j+1, vals+j, (i-j)*sizeof(val_t));
     vals[j] = vbuf;
     ibuf = ind0[i];
-    memmove(ind0+j+1, ind0+j, (i-j)*sizeof(idx_t));
+    memmove(ind0+j+1, ind0+j, (i-j)*sizeof(fidx_t));
     ind0[j] = ibuf;
     ibuf = ind1[i];
-    memmove(ind1+j+1, ind1+j, (i-j)*sizeof(idx_t));
+    memmove(ind1+j+1, ind1+j, (i-j)*sizeof(fidx_t));
     ind1[j] = ibuf;
     ibuf = ind2[i];
-    memmove(ind2+j+1, ind2+j, (i-j)*sizeof(idx_t));
+    memmove(ind2+j+1, ind2+j, (i-j)*sizeof(fidx_t));
     ind2[j] = ibuf;
   }
 }
@@ -299,8 +305,8 @@ static void p_tt_insertionsort2(
   idx_t const start,
   idx_t const end)
 {
-  idx_t * const ind0 = tt->ind[cmplt[0]];
-  idx_t * const ind1 = tt->ind[cmplt[1]];
+  fidx_t * const ind0 = tt->ind[cmplt[0]];
+  fidx_t * const ind1 = tt->ind[cmplt[1]];
   val_t * const vals = tt->vals;
 
   val_t vbuf;
@@ -318,10 +324,10 @@ static void p_tt_insertionsort2(
     memmove(vals+j+1, vals+j, (i-j)*sizeof(val_t));
     vals[j] = vbuf;
     ibuf = ind0[i];
-    memmove(ind0+j+1, ind0+j, (i-j)*sizeof(idx_t));
+    memmove(ind0+j+1, ind0+j, (i-j)*sizeof(fidx_t));
     ind0[j] = ibuf;
     ibuf = ind1[i];
-    memmove(ind1+j+1, ind1+j, (i-j)*sizeof(idx_t));
+    memmove(ind1+j+1, ind1+j, (i-j)*sizeof(fidx_t));
     ind1[j] = ibuf;
   }
 }
@@ -340,7 +346,7 @@ static void p_tt_insertionsort(
   idx_t const start,
   idx_t const end)
 {
-  idx_t * ind;
+  fidx_t * ind;
   val_t * const vals = tt->vals;
   idx_t const nmodes = tt->nmodes;
 
@@ -361,7 +367,7 @@ static void p_tt_insertionsort(
     for(idx_t m=0; m < nmodes; ++m) {
       ind = tt->ind[m];
       ibuf = ind[i];
-      memmove(ind+j+1, ind+j, (i-j)*sizeof(idx_t));
+      memmove(ind+j+1, ind+j, (i-j)*sizeof(fidx_t));
       ind[j] = ibuf;
     }
   }
@@ -385,9 +391,9 @@ static void p_tt_quicksort3(
   val_t vmid;
   idx_t imid[3];
 
-  idx_t * const ind0 = tt->ind[cmplt[0]];
-  idx_t * const ind1 = tt->ind[cmplt[1]];
-  idx_t * const ind2 = tt->ind[cmplt[2]];
+  fidx_t * const ind0 = tt->ind[cmplt[0]];
+  fidx_t * const ind1 = tt->ind[cmplt[1]];
+  fidx_t * const ind2 = tt->ind[cmplt[2]];
   val_t * const vals = tt->vals;
 
   if((end-start) <= MIN_QUICKSORT_SIZE) {
@@ -476,8 +482,8 @@ static void p_tt_quicksort2(
   val_t vmid;
   idx_t imid[2];
 
-  idx_t * const ind0 = tt->ind[cmplt[0]];
-  idx_t * const ind1 = tt->ind[cmplt[1]];
+  fidx_t * const ind0 = tt->ind[cmplt[0]];
+  fidx_t * const ind1 = tt->ind[cmplt[1]];
   val_t * const vals = tt->vals;
 
   if((end-start) <= MIN_QUICKSORT_SIZE) {
@@ -545,7 +551,7 @@ static void p_tt_quicksort2(
 #define SWAP(T, a, b) do { T tmp = a; a = b; b = tmp; } while (0)
 
 static inline int cmp3(
-  idx_t *a1, idx_t *a2, idx_t *a3, int idx1, int idx2)
+  fidx_t *a1, fidx_t *a2, fidx_t *a3, int idx1, int idx2)
 {
   if (a1[idx1] < a1[idx2]) {
     return -1;
@@ -572,9 +578,9 @@ static inline int cmp3(
 }
 
 static void merge(
-  idx_t *in_idx1, idx_t *in_idx2, idx_t* in_idx3, val_t *in_val,
+  fidx_t *in_idx1, fidx_t *in_idx2, fidx_t* in_idx3, val_t *in_val,
   int first1, int last1, int first2, int last2,
-  idx_t *out_idx1, idx_t *out_idx2, idx_t *out_idx3, val_t *out_val)
+  fidx_t *out_idx1, fidx_t *out_idx2, fidx_t *out_idx3, val_t *out_val)
 {
   int out = 0;
   for ( ; first1 != last1; ++out) {
@@ -627,7 +633,7 @@ static void merge(
 
 static void kth_element_(
    int *out1, int *out2,
-   idx_t *in1, idx_t *in2, idx_t *in3,
+   fidx_t *in1, fidx_t *in2, fidx_t *in3,
    int begin1, int begin2,
    int left, int right,
    int n1, int n2,
@@ -666,7 +672,7 @@ static void kth_element_(
  */
 static void kth_element(
   int *out1, int *out2,
-  idx_t *in1, idx_t *in2, idx_t *in3,
+  fidx_t *in1, fidx_t *in2, fidx_t *in3,
   int begin1, int begin2,
   int n1, int n2, int k)
 {
@@ -732,10 +738,10 @@ static void kth_element(
  * @param my_thread_num thread id (zeor-based) among the threads that participate in this merge
  */
 static void parallel_merge(
-  idx_t *in1, idx_t *in2, idx_t *in3, val_t *in_val,
+  fidx_t *in1, fidx_t *in2, fidx_t *in3, val_t *in_val,
   int in_begin1, int in_begin2,
   int n1, int n2,
-  idx_t *out1, idx_t *out2, idx_t *out3, val_t *out_val,
+  fidx_t *out1, fidx_t *out2, fidx_t *out3, val_t *out_val,
   int num_threads, int my_thread_num)
 {
    int n = n1 + n2;
@@ -775,9 +781,9 @@ void merge_sort(
    int len = end - start;
    if (len == 0) return;
 
-   idx_t *temp1 = (idx_t *)splatt_malloc(len * sizeof(idx_t));
-   idx_t *temp2 = (idx_t *)splatt_malloc(len * sizeof(idx_t));
-   idx_t *temp3 = (idx_t *)splatt_malloc(len * sizeof(idx_t));
+   fidx_t *temp1 = (fidx_t *)splatt_malloc(len * sizeof(fidx_t));
+   fidx_t *temp2 = (fidx_t *)splatt_malloc(len * sizeof(fidx_t));
+   fidx_t *temp3 = (fidx_t *)splatt_malloc(len * sizeof(fidx_t));
    val_t *temp_val = (val_t *)splatt_malloc(len * sizeof(val_t));
 
    int thread_private_len[omp_get_max_threads()];
@@ -802,14 +808,14 @@ void merge_sort(
       // merge sorted sequences
       int in_group_size;
 
-      idx_t *in_buf1 = tt->ind[cmplt[0]] + start;
-      idx_t *in_buf2 = tt->ind[cmplt[1]] + start;
-      idx_t *in_buf3 = tt->ind[cmplt[2]] + start;
+      fidx_t *in_buf1 = tt->ind[cmplt[0]] + start;
+      fidx_t *in_buf2 = tt->ind[cmplt[1]] + start;
+      fidx_t *in_buf3 = tt->ind[cmplt[2]] + start;
       val_t *in_val = tt->vals + start;
 
-      idx_t *out_buf1 = temp1;
-      idx_t *out_buf2 = temp2;
-      idx_t *out_buf3 = temp3;
+      fidx_t *out_buf1 = temp1;
+      fidx_t *out_buf2 = temp2;
+      fidx_t *out_buf3 = temp3;
       val_t *out_val = temp_val;
 
       for (in_group_size = 1; in_group_size < num_threads; in_group_size *= 2)
@@ -842,9 +848,9 @@ void merge_sort(
             num_threads_in_group,
             id_in_group);
 
-         idx_t *temp1 = in_buf1;
-         idx_t *temp2 = in_buf2;
-         idx_t *temp3 = in_buf3;
+         fidx_t *temp1 = in_buf1;
+         fidx_t *temp2 = in_buf2;
+         fidx_t *temp3 = in_buf3;
          val_t *temp_val = in_val;
 
          in_buf1 = out_buf1;
@@ -904,9 +910,9 @@ void radix_sort(sptensor_t * const tt, idx_t *cmplt)
     maxdim = SS_MAX(maxdim, tt->dims[m]);
   }
 
-  idx_t **new_ind = splatt_malloc(tt->nmodes*sizeof(idx_t *));
+  fidx_t **new_ind = splatt_malloc(tt->nmodes*sizeof(fidx_t *));
   for(idx_t m = 0; m < tt->nmodes; ++m) {
-    new_ind[m] = splatt_malloc(tt->nnz*sizeof(idx_t));
+    new_ind[m] = splatt_malloc(tt->nnz*sizeof(fidx_t));
   }
   val_t *new_vals = splatt_malloc(tt->nnz*sizeof(val_t));
 
@@ -1062,13 +1068,24 @@ void counting_sort_hybrid(sptensor_t * const tt, idx_t *cmplt)
   idx_t m = cmplt[0];
   idx_t nslices = tt->dims[m];
 
-  idx_t **new_ind = splatt_malloc(tt->nmodes*sizeof(idx_t *));
+  fidx_t **new_ind = splatt_malloc(tt->nmodes*sizeof(fidx_t *));
   for(idx_t i = 0; i < tt->nmodes; ++i) {
-    if(i != m) new_ind[i] = splatt_malloc(tt->nnz*sizeof(idx_t));
+#ifdef HBW_ALLOC
+    if(i != m) hbw_posix_memalign((void **)&new_ind[i], 4096, tt->nnz*sizeof(fidx_t));
+#else
+    if(i != m) new_ind[i] = splatt_malloc(tt->nnz*sizeof(fidx_t));
+#endif
   }
-  val_t *new_vals = splatt_malloc(tt->nnz*sizeof(val_t));
 
-  idx_t *histogram_array = splatt_malloc((nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
+  val_t *new_vals;
+  idx_t *histogram_array;
+#ifdef HBW_ALLOC
+  hbw_posix_memalign((void **)&new_vals, 4096, tt->nnz*sizeof(val_t));
+  hbw_posix_memalign((void **)&histogram_array, 4096, (nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
+#else
+  new_vals = splatt_malloc(tt->nnz*sizeof(val_t));
+  histogram_array = splatt_malloc((nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
+#endif
 
 #pragma omp parallel
   {
@@ -1181,12 +1198,20 @@ void counting_sort_hybrid(sptensor_t * const tt, idx_t *cmplt)
 
   for(idx_t i = 0; i < tt->nmodes; ++i) {
     if(i != m) {
+#ifdef HBW_ALLOC
+      hbw_free(tt->ind[i]);
+#else
       splatt_free(tt->ind[i]);
+#endif
       tt->ind[i] = new_ind[i];
     }
   }
   splatt_free(new_ind);
+#ifdef HBW_ALLOC
+  hbw_free(tt->vals);
+#else
   splatt_free(tt->vals);
+#endif
   tt->vals = new_vals;
 
   histogram_array[nslices] = tt->nnz;
@@ -1198,7 +1223,11 @@ void counting_sort_hybrid(sptensor_t * const tt, idx_t *cmplt)
     }
   }
 
+#ifdef HBW_ALLOC
+  hbw_free(histogram_array);
+#else
   splatt_free(histogram_array);
+#endif
 
   //printf("\tqsort takes %f\n", omp_get_wtime() - t);
 }
@@ -1221,7 +1250,7 @@ static void p_tt_quicksort(
   val_t vmid;
   idx_t imid[MAX_NMODES];
 
-  idx_t * ind;
+  fidx_t * ind;
   val_t * const vals = tt->vals;
   idx_t const nmodes = tt->nmodes;
 

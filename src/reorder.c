@@ -366,7 +366,7 @@ void perm_apply(
 {
   idx_t const nnz = tt->nnz;
   for(idx_t m=0; m < tt->nmodes; ++m) {
-    idx_t * const ind = tt->ind[m];
+    fidx_t * const ind = tt->ind[m];
     idx_t const * const p = perm[m];
 #pragma omp parallel for
     for(idx_t n=0; n < nnz; ++n) {

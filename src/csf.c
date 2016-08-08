@@ -41,7 +41,7 @@ int splatt_csf_load(
 int splatt_csf_convert(
     splatt_idx_t const nmodes,
     splatt_idx_t const nnz,
-    splatt_idx_t ** const inds,
+    splatt_fidx_t ** const inds,
     splatt_val_t * const vals,
     splatt_csf ** tensors,
     double const * const options)
@@ -444,7 +444,7 @@ static void p_print_csf(
       if(ft->fids[0] == NULL) {
         printf(" %"SPLATT_PF_IDX"", ft->fptr[0][f]);
       } else {
-        printf(" (%"SPLATT_PF_IDX", %"SPLATT_PF_IDX")", ft->fptr[0][f],
+        printf(" (%"SPLATT_PF_IDX", %"SPLATT_PF_FIDX")", ft->fptr[0][f],
             ft->fids[0][f]);
       }
     }
@@ -454,7 +454,7 @@ static void p_print_csf(
     for(idx_t m=1; m < ct->nmodes-1; ++m) {
       printf("[%"SPLATT_PF_IDX"] ", ft->nfibs[m]);
       for(idx_t f=0; f < ft->nfibs[m]; ++f) {
-        printf(" (%"SPLATT_PF_IDX", %"SPLATT_PF_IDX")", ft->fptr[m][f],
+        printf(" (%"SPLATT_PF_IDX", %"SPLATT_PF_FIDX")", ft->fptr[m][f],
             ft->fids[m][f]);
       }
       printf(" %"SPLATT_PF_IDX"\n", ft->fptr[m][ft->nfibs[m]]);
@@ -463,7 +463,7 @@ static void p_print_csf(
     /* vals/inds */
     printf("[%"SPLATT_PF_IDX"] ", ft->nfibs[ct->nmodes-1]);
     for(idx_t f=0; f < ft->nfibs[ct->nmodes-1]; ++f) {
-      printf(" %3"SPLATT_PF_IDX"", ft->fids[ct->nmodes-1][f]);
+      printf(" %3"SPLATT_PF_FIDX"", ft->fids[ct->nmodes-1][f]);
     }
     printf("\n");
     for(idx_t n=0; n < ft->nfibs[ct->nmodes-1]; ++n) {
@@ -498,7 +498,7 @@ static void p_mk_outerptr(
   assert(nnzstart < nnzend);
 
   /* the mode after accounting for dim_perm */
-  idx_t const * const restrict ttind = tt->ind[ct->dim_perm[0]] + nnzstart;
+  fidx_t const * const restrict ttind = tt->ind[ct->dim_perm[0]] + nnzstart;
 
   /* count fibers */
   idx_t nfibs = 1;
@@ -522,7 +522,7 @@ static void p_mk_outerptr(
   }
 
   idx_t  * const restrict fp = pt->fptr[0];
-  idx_t  * const restrict fi = pt->fids[0];
+  fidx_t  * const restrict fi = pt->fids[0];
   fp[0] = 0;
   if(fi != NULL) {
     fi[0] = ttind[0];
@@ -574,7 +574,7 @@ static void p_mk_fptr(
     return;
   }
   /* the mode after accounting for dim_perm */
-  idx_t const * const restrict ttind = tt->ind[ct->dim_perm[mode]] + nnzstart;
+  fidx_t const * const restrict ttind = tt->ind[ct->dim_perm[mode]] + nnzstart;
 
   csf_sparsity * const pt = ct->pt + tile_id;
 
@@ -599,7 +599,7 @@ static void p_mk_fptr(
   pt->fptr[mode] = splatt_malloc((nfibs+1) * sizeof(**(pt->fptr)));
   pt->fids[mode] = splatt_malloc(nfibs * sizeof(**(pt->fids)));
   idx_t * const restrict fp = pt->fptr[mode];
-  idx_t * const restrict fi = pt->fids[mode];
+  fidx_t * const restrict fi = pt->fids[mode];
   fp[0] = 0;
 
   /* now fill in fiber info */
@@ -653,8 +653,10 @@ static void p_csf_alloc_untiled(
   pt->nfibs[nmodes-1] = ct->nnz;
   pt->fids[nmodes-1] = splatt_malloc(ct->nnz * sizeof(**(pt->fids)));
   pt->vals           = splatt_malloc(ct->nnz * sizeof(*(pt->vals)));
-  par_memcpy(pt->fids[nmodes-1], tt->ind[ct->dim_perm[nmodes-1]],
-      ct->nnz * sizeof(**(pt->fids)));
+#pragma omp parallel for
+  for (idx_t i = 0; i < ct->nnz; ++i) {
+    pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][i];
+  }
   par_memcpy(pt->vals, tt->vals, ct->nnz * sizeof(*(pt->vals)));
 
   /* setup a basic tile ptr for one tile */
@@ -729,8 +731,10 @@ static void p_csf_alloc_densetile(
     pt->nfibs[nmodes-1] = ptnnz;
 
     pt->fids[nmodes-1] = splatt_malloc(ptnnz * sizeof(**(pt->fids)));
-    memcpy(pt->fids[nmodes-1], tt->ind[ct->dim_perm[nmodes-1]] + startnnz,
-        ptnnz * sizeof(**(pt->fids)));
+#pragma omp parallel for
+    for (idx_t i = 0; i < ptnnz; ++i) {
+      pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][startnnz + i];
+    }
 
     pt->vals = splatt_malloc(ptnnz * sizeof(*(pt->vals)));
     memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));

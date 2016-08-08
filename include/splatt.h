@@ -35,6 +35,12 @@
   #define SPLATT_VAL_TYPEWIDTH 64
 #endif
 
+/* Indices to factor matrices. Typically don't need to be 64-bit, while
+ * splatt_idx_t needs to be 64-bit to index non-zeros.
+ */
+#ifndef SPLATT_FIDX_TYPEWIDTH
+  #define SPLATT_FIDX_TYPEWIDTH 32
+#endif
 
 /* Set type constants based on width. */
 #if   SPLATT_IDX_TYPEWIDTH == 32
@@ -69,6 +75,22 @@
 
 #else
   #error *** Incorrect user-supplied value of SPLATT_VAL_TYPEWIDTH ***
+#endif
+
+
+#if   SPLATT_FIDX_TYPEWIDTH == 32
+  typedef uint32_t splatt_fidx_t;
+  #define SPLATT_FIDX_MAX UINT32_MAX
+  #define SPLATT_PF_FIDX PRIu32
+  #define SPLATT_MPI_FIDX MPI_UINT32_T
+
+#elif SPLATT_FIDX_TYPEWIDTH == 64
+  typedef uint64_t splatt_fidx_t;
+  #define SPLATT_FIDX_MAX UINT64_MAX
+  #define SPLATT_PF_FIDX PRIu64
+  #define SPLATT_MPI_FIDX MPI_UINT64_T
+#else
+  #error *** Incorrect user-supplied value of SPLATT_FIDX_TYPEWIDTH ***
 #endif
 
 
@@ -230,7 +252,6 @@ typedef struct splatt_kruskal
 } splatt_kruskal;
 
 
-
 /**
 * @brief The sparsity pattern of a CSF (sub-)tensor.
 */
@@ -246,7 +267,7 @@ typedef struct
 
   /** @brief The index of each node. These map nodes back to the original
    *         tensor nonzeros. */
-  splatt_idx_t * fids[SPLATT_MAX_NMODES];
+  splatt_fidx_t * fids[SPLATT_MAX_NMODES];
 
   /** @brief The actual nonzero values. This array is of length
    *         nfibs[nmodes-1]. */
@@ -376,7 +397,7 @@ int splatt_csf_load(
 int splatt_csf_convert(
     splatt_idx_t const nmodes,
     splatt_idx_t const nnz,
-    splatt_idx_t ** const inds,
+    splatt_fidx_t ** const inds,
     splatt_val_t * const vals,
     splatt_csf ** tensors,
     double const * const options);
@@ -514,7 +535,7 @@ int splatt_mpi_coord_load(
     char const * const fname,
     splatt_idx_t * nmodes,
     splatt_idx_t * nnz,
-    splatt_idx_t *** inds,
+    splatt_fidx_t *** inds,
     splatt_val_t ** vals,
     double const * const options,
     MPI_Comm comm);

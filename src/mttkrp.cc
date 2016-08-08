@@ -20,23 +20,27 @@
 #endif
 
 #define SPLATT_NFACTOR_COMPILE_CONSTANT
+#ifndef __AVX512F__ // RTM and ATOMIC_CACHE not yet implemented for AVX512
 //#define SPLATT_RTM // use restricted transactional memory
+//#define SPLATT_ATOMIC_CACHE
+#endif
 //#define SPLATT_CAS
+//#define SPLATT_EMULATE_VECTOR_CAS
 
 #define NLOCKS 1024
 static int locks_initialized = 0;
 
-//#define SPLATT_ATOMIC_CACHE
 #ifdef SPLATT_ATOMIC_CACHE
 #define NBUCKETS 65536
 #endif
 
 //#define SPLATT_NO_LOCK
 //#define SPLATT_MY_TTAS_LOCK
+#define SPLATT_LOCK_PAD (8)
 #ifdef SPLATT_MY_TTAS_LOCK
-static volatile int locks[NLOCKS*16];
+static volatile long locks[NLOCKS*SPLATT_LOCK_PAD];
 #elif !defined(SPLATT_NO_LOCK)
-static omp_lock_t locks[NLOCKS*16];
+static omp_lock_t locks[NLOCKS*SPLATT_LOCK_PAD];
 #endif
 
 static void p_init_locks()
@@ -44,9 +48,9 @@ static void p_init_locks()
   if (!locks_initialized) {
     for(int i=0; i < NLOCKS; ++i) {
 #ifdef SPLATT_MY_TTAS_LOCK
-      locks[i*16] = 0;
+      locks[i*SPLATT_LOCK_PAD] = 0;
 #elif !defined(SPLATT_NO_LOCK)
-      omp_init_lock(locks+i*16);
+      omp_init_lock(locks+i*SPLATT_LOCK_PAD);
 #endif
     }
     locks_initialized = 1;
@@ -55,10 +59,10 @@ static void p_init_locks()
 
 static inline void splatt_set_lock(int id)
 {
-  int i = (id%NLOCKS)*16;
+  int i = (id%NLOCKS)*SPLATT_LOCK_PAD;
 #ifdef SPLATT_MY_TTAS_LOCK
   //while (0 != locks[i] || 0 != __sync_lock_test_and_set(locks + i, 0xff)); // TTAS
-  while (0 != __sync_lock_test_and_set(locks + i, 0xff)) { _mm_pause(); }; // TAS with backoff
+  while (0 != __sync_lock_test_and_set(locks + i, 1)) { _mm_pause(); }; // TAS with backoff
 #elif !defined(SPLATT_NO_LOCK)
   omp_set_lock(locks + i);
 #endif
@@ -66,9 +70,11 @@ static inline void splatt_set_lock(int id)
 
 static inline void splatt_unset_lock(int id)
 {
-  int i = (id%NLOCKS)*16;
+  int i = (id%NLOCKS)*SPLATT_LOCK_PAD;
 #ifdef SPLATT_MY_TTAS_LOCK
-  __sync_lock_release(locks + i);
+  locks[i] = 0;
+  asm volatile("" ::: "memory");
+  //__sync_lock_release(locks + i); // icc generates mfence instruction for this
 #elif !defined(SPLATT_NO_LOCK)
   omp_unset_lock(locks + i);
 #endif
@@ -303,9 +309,9 @@ static void p_csf_mttkrp_root_tiled3(
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
   idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
 
-  idx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  idx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  idx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
 
   val_t const * const avals = mats[ct->dim_perm[1]]->vals;
   val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
@@ -366,9 +372,9 @@ static void p_csf_mttkrp_root3_(
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
   idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
 
-  idx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  idx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  idx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
 
   val_t const * const avals = mats[ct->dim_perm[1]]->vals;
   val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
@@ -441,10 +447,15 @@ static void p_csf_mttkrp_root3_(
     idx_t const fid = s;
 
 #ifdef SPLATT_INTRINSIC
+#ifdef __AVX512F__
+    __m512d accumO_v1 = _mm512_setzero_pd();
+    __m512d accumO_v2 = _mm512_setzero_pd();
+#else
     __m256d accumO_v1 = _mm256_setzero_pd();
     __m256d accumO_v2 = _mm256_setzero_pd();
     __m256d accumO_v3 = _mm256_setzero_pd();
     __m256d accumO_v4 = _mm256_setzero_pd();
+#endif
 #else
     for(idx_t r=0; r < NFACTORS; ++r) {
       accumO[r] = 0;
@@ -462,6 +473,23 @@ static void p_csf_mttkrp_root3_(
       Load(inds + jjfirst);
 #endif
 #ifdef SPLATT_INTRINSIC
+#ifdef __AVX512F__
+      __m512d accumF_v1 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv));
+      __m512d accumF_v2 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv + 8));
+
+      /* foreach nnz in fiber */
+      for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
+        val_t const v = vals[jj];
+        val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
+        accumF_v1 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv), accumF_v1);
+        accumF_v2 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv + 8), accumF_v2);
+      }
+
+      /* scale inner products by row of A and update to M */
+      val_t const * const restrict av = avals  + (fids[f] * NFACTORS);
+      accumO_v1 = _mm512_fmadd_pd(accumF_v1, _mm512_load_pd(av), accumO_v1);
+      accumO_v2 = _mm512_fmadd_pd(accumF_v2, _mm512_load_pd(av + 8), accumO_v2);
+#else
       __m256d accumF_v1 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv));
       __m256d accumF_v2 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 4));
       __m256d accumF_v3 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 8));
@@ -483,7 +511,8 @@ static void p_csf_mttkrp_root3_(
       accumO_v2 = _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(av + 4), accumO_v2);
       accumO_v3 = _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(av + 8), accumO_v3);
       accumO_v4 = _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(av + 12), accumO_v4);
-#else
+#endif
+#else // SPLATT_INTRINSIC
       for(idx_t r=0; r < NFACTORS; ++r) {
         accumF[r] = vfirst * bv[r];
 #ifdef SPLATT_SIM_CACHE
@@ -520,10 +549,15 @@ static void p_csf_mttkrp_root3_(
 
     val_t * const restrict mv = ovals + (fid * NFACTORS);
 #ifdef SPLATT_INTRINSIC
+#ifdef __AVX512F__
+    _mm512_store_pd(mv, accumO_v1);
+    _mm512_store_pd(mv + 8, accumO_v2);
+#else
     _mm256_stream_pd(mv, accumO_v1);
     _mm256_stream_pd(mv + 4, accumO_v2);
     _mm256_stream_pd(mv + 8, accumO_v3);
     _mm256_stream_pd(mv + 12, accumO_v4);
+#endif
 #else
 #pragma vector nontemporal(mv)
     for(idx_t r=0; r < NFACTORS; ++r) {
@@ -580,9 +614,9 @@ static void p_csf_mttkrp_root3(
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
   idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
 
-  idx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  idx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  idx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
 
   val_t const * const avals = mats[ct->dim_perm[1]]->vals;
   val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
@@ -634,8 +668,9 @@ static void p_csf_mttkrp_root3(
     }
   }
 
+#pragma omp barrier
   timer_stop(&time);
-  /*if (0 == omp_get_thread_num() && 
+  if (0 == omp_get_thread_num() &&
       opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
 
     idx_t bdim = ct->dims[ct->dim_perm[1]];
@@ -646,7 +681,7 @@ static void p_csf_mttkrp_root3(
 
     printf("       p_csf_mttkrp_root3 (%0.3fs, %.3f GBps)\n",
         time.seconds, gbps);
-  }*/
+  }
 }
 
 #ifdef SPLATT_ATOMIC_CACHE
@@ -668,9 +703,9 @@ static void p_csf_mttkrp_internal3_(
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
   idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
 
-  idx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  idx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  idx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
 
   val_t const * const avals = mats[ct->dim_perm[0]]->vals;
   val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
@@ -738,19 +773,29 @@ static void p_csf_mttkrp_internal3_(
       val_t const vfirst   = vals[jjfirst];
       val_t const * const restrict bv = bvals + (inds[jjfirst] * NFACTORS);
 #ifdef SPLATT_INTRINSIC
+#ifdef __AVX512F__
+      __m512d accumF_v1 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv));
+      __m512d accumF_v2 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv + 8));
+#else
       __m256d accumF_v1 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv));
       __m256d accumF_v2 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 4));
       __m256d accumF_v3 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 8));
       __m256d accumF_v4 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 12));
+#endif
 
       /* foreach nnz in fiber */
       for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
         val_t const v = vals[jj];
         val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
+#ifdef __AVX512F__
+        accumF_v1 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv), accumF_v1);
+        accumF_v2 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv + 8), accumF_v2);
+#else
         accumF_v1 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv), accumF_v1);
         accumF_v2 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 4), accumF_v2);
         accumF_v3 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 8), accumF_v3);
         accumF_v4 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 12), accumF_v4);
+#endif
       }
 
       /* scale inner products by row of A and update to M */
@@ -799,12 +844,99 @@ static void p_csf_mttkrp_internal3_(
 
           //++miss_cnt;
         }
+#elif defined(SPLATT_CAS)
+        __m128d old_ov, new_ov, acc;
+
+        do {
+          old_ov = _mm_load_pd(ov);
+#ifdef __AVX512F__
+          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 0));
 #else
+          acc = _mm256_extractf128_pd(accumF_v1, 0);
+#endif
+          new_ov = _mm_fmadd_pd(_mm_load_pd(rv), acc, old_ov);
+        } while (!__sync_bool_compare_and_swap((__int128 *)ov, *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#ifndef SPLATT_EMULATE_VECTOR_CAS
+        do {
+          old_ov = _mm_load_pd(ov + 2);
+#ifdef __AVX512F__
+          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 1));
+#else
+          acc = _mm256_extractf128_pd(accumF_v1, 1);
+#endif
+          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 2), acc, old_ov);
+        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 2), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+
+        do {
+          old_ov = _mm_load_pd(ov + 4);
+#ifdef __AVX512F__
+          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 2));
+#else
+          acc = _mm256_extractf128_pd(accumF_v2, 0);
+#endif
+          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 4), acc, old_ov);
+        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 4), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+        do {
+          old_ov = _mm_load_pd(ov + 6);
+#ifdef __AVX512F__
+          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 3));
+#else
+          acc = _mm256_extractf128_pd(accumF_v2, 1);
+#endif
+          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 6), acc, old_ov);
+        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 6), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#endif
+
+        do {
+          old_ov = _mm_load_pd(ov + 8);
+#ifdef __AVX512F__
+          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 0));
+#else
+          acc = _mm256_extractf128_pd(accumF_v3, 0);
+#endif
+          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 8), acc, old_ov);
+        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 8), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#ifndef SPLATT_EMULATE_VECTOR_CAS
+        do {
+          old_ov = _mm_load_pd(ov + 10);
+#ifdef __AVX512F__
+          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 1));
+#else
+          acc = _mm256_extractf128_pd(accumF_v3, 1);
+#endif
+          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 10), acc, old_ov);
+        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 10), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+
+        do {
+          old_ov = _mm_load_pd(ov + 12);
+#ifdef __AVX512F__
+          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 2));
+#else
+          acc = _mm256_extractf128_pd(accumF_v4, 0);
+#endif
+          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 12), acc, old_ov);
+        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 12), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+        do {
+          old_ov = _mm_load_pd(ov + 14);
+#ifdef __AVX512F__
+          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 3));
+#else
+          acc = _mm256_extractf128_pd(accumF_v4, 1);
+#endif
+          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 14), acc, old_ov);
+        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 14), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#endif
+#else // !SPLATT_CAS
         splatt_set_lock(oid);
+#ifdef __AVX512F__
+        _mm512_store_pd(ov, _mm512_fmadd_pd(accumF_v1, _mm512_load_pd(rv), _mm512_load_pd(ov)));
+        _mm512_store_pd(ov + 8, _mm512_fmadd_pd(accumF_v2, _mm512_load_pd(rv + 8), _mm512_load_pd(ov + 8)));
+#else
         _mm256_store_pd(ov, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(ov)));
         _mm256_store_pd(ov + 4, _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(rv + 4), _mm256_load_pd(ov + 4)));
         _mm256_store_pd(ov + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(ov + 8)));
         _mm256_store_pd(ov + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(ov + 12)));
+#endif
         splatt_unset_lock(oid);
 #endif
       }
@@ -921,9 +1053,9 @@ static void p_csf_mttkrp_internal3(
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
   idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
 
-  idx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  idx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  idx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
 
   val_t const * const avals = mats[ct->dim_perm[0]]->vals;
   val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
@@ -978,6 +1110,7 @@ static void p_csf_mttkrp_internal3(
     }
   }
 
+#pragma omp barrier
   timer_stop(&time);
   if (0 == omp_get_thread_num() && 
       opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
@@ -1005,9 +1138,9 @@ static void p_csf_mttkrp_leaf3_(
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
   idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
 
-  idx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  idx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  idx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
 
   val_t const * const avals = mats[ct->dim_perm[0]]->vals;
   val_t const * const bvals = mats[ct->dim_perm[1]]->vals;
@@ -1063,10 +1196,15 @@ static void p_csf_mttkrp_leaf3_(
       /* fill fiber with hada */
       val_t const * const restrict av = bvals  + (fids[f] * NFACTORS);
 #ifdef SPLATT_INTRINSIC
+#ifdef __AVX512F__
+      __m512d accumF_v1 = _mm512_mul_pd(_mm512_load_pd(rv), _mm512_load_pd(av));
+      __m512d accumF_v2 = _mm512_mul_pd(_mm512_load_pd(rv + 8), _mm512_load_pd(av + 8));
+#else
       __m256d accumF_v1 = _mm256_mul_pd(_mm256_load_pd(rv), _mm256_load_pd(av));
       __m256d accumF_v2 = _mm256_mul_pd(_mm256_load_pd(rv + 4), _mm256_load_pd(av + 4));
       __m256d accumF_v3 = _mm256_mul_pd(_mm256_load_pd(rv + 8), _mm256_load_pd(av + 8));
       __m256d accumF_v4 = _mm256_mul_pd(_mm256_load_pd(rv + 12), _mm256_load_pd(av + 12));
+#endif
 
       /* foreach nnz in fiber, scale with hada and write to ovals */
       for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
@@ -1083,12 +1221,101 @@ static void p_csf_mttkrp_leaf3_(
         else
 #endif
         {
+#ifdef SPLATT_CAS
+          __m128d old_ov, new_ov, acc;
+
+          do {
+            old_ov = _mm_load_pd(ov);
+#ifdef __AVX512F__
+            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 0));
+#else
+            acc = _mm256_extractf128_pd(accumF_v1, 0);
+#endif
+            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+          } while (!__sync_bool_compare_and_swap((__int128 *)ov, *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#ifndef SPLATT_EMULATE_VECTOR_CAS
+          do {
+            old_ov = _mm_load_pd(ov + 2);
+#ifdef __AVX512F__
+            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 1));
+#else
+            acc = _mm256_extractf128_pd(accumF_v1, 1);
+#endif
+            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 2), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+
+          do {
+            old_ov = _mm_load_pd(ov + 4);
+#ifdef __AVX512F__
+            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 2));
+#else
+            acc = _mm256_extractf128_pd(accumF_v2, 0);
+#endif
+            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 4), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+          do {
+            old_ov = _mm_load_pd(ov + 6);
+#ifdef __AVX512F__
+            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 3));
+#else
+            acc = _mm256_extractf128_pd(accumF_v2, 1);
+#endif
+            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 6), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#endif
+
+          do {
+            old_ov = _mm_load_pd(ov + 8);
+#ifdef __AVX512F__
+            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 0));
+#else
+            acc = _mm256_extractf128_pd(accumF_v3, 0);
+#endif
+            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 8), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#ifndef SPLATT_EMULATE_VECTOR_CAS
+          do {
+            old_ov = _mm_load_pd(ov + 10);
+#ifdef __AVX512F__
+            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 1));
+#else
+            acc = _mm256_extractf128_pd(accumF_v3, 1);
+#endif
+            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 10), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+
+          do {
+            old_ov = _mm_load_pd(ov + 12);
+#ifdef __AVX512F__
+            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 2));
+#else
+            acc = _mm256_extractf128_pd(accumF_v4, 0);
+#endif
+            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 12), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+          do {
+            old_ov = _mm_load_pd(ov + 14);
+#ifdef __AVX512F__
+            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 3));
+#else
+            acc = _mm256_extractf128_pd(accumF_v4, 1);
+#endif
+            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 14), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#endif
+#else
           splatt_set_lock(inds[jj]);
+#ifdef __AVX512F__
+          _mm512_store_pd(ov, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v1, _mm512_load_pd(ov)));
+          _mm512_store_pd(ov + 8, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v2, _mm512_load_pd(ov + 8)));
+#else
           _mm256_store_pd(ov, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v1, _mm256_load_pd(ov)));
           _mm256_store_pd(ov + 4, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v2, _mm256_load_pd(ov + 4)));
           _mm256_store_pd(ov + 8, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v3, _mm256_load_pd(ov + 8)));
           _mm256_store_pd(ov + 12, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v4, _mm256_load_pd(ov + 12)));
+#endif
           splatt_unset_lock(inds[jj]);
+#endif
         }
       }
 
@@ -1167,9 +1394,9 @@ static void p_csf_mttkrp_leaf3(
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
   idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
 
-  idx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  idx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  idx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
 
   val_t const * const avals = mats[ct->dim_perm[0]]->vals;
   val_t const * const bvals = mats[ct->dim_perm[1]]->vals;
@@ -1216,6 +1443,7 @@ static void p_csf_mttkrp_leaf3(
     }
   }
 
+#pragma omp barrier
   timer_stop(&time);
   if (0 == omp_get_thread_num() && 
       opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
@@ -1367,9 +1595,9 @@ static void p_csf_mttkrp_leaf_tiled3(
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
   idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
 
-  idx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  idx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  idx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
 
   val_t const * const avals = mats[ct->dim_perm[0]]->vals;
   val_t const * const bvals = mats[ct->dim_perm[1]]->vals;
@@ -1587,9 +1815,9 @@ static void p_csf_mttkrp_internal_tiled3(
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
   idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
 
-  idx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  idx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  idx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
 
   val_t const * const avals = mats[ct->dim_perm[0]]->vals;
   val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
@@ -2365,10 +2593,10 @@ void mttkrp_ttbox(
   par_memset(M->vals, 0, I * rank * sizeof(val_t));
 
   idx_t const nnz = tt->nnz;
-  idx_t const * const restrict indM = tt->ind[mode];
-  idx_t const * const restrict indA =
+  fidx_t const * const restrict indM = tt->ind[mode];
+  fidx_t const * const restrict indA =
     mode == 0 ? tt->ind[1] : tt->ind[0];
-  idx_t const * const restrict indB =
+  fidx_t const * const restrict indB =
     mode == 2 ? tt->ind[1] : tt->ind[2];
 
   val_t const * const restrict vals = tt->vals;

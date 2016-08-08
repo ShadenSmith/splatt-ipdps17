@@ -23,7 +23,7 @@
 *         start/end of each slab.
 */
 static idx_t * p_mkslabptr(
-  idx_t const * const inds,
+  fidx_t const * const inds,
   idx_t const nnz,
   idx_t const nslabs)
 {
@@ -31,7 +31,7 @@ static idx_t * p_mkslabptr(
 
   /* make an offset ptr before prefix sum */
   for(idx_t n=0; n < nnz; ++n) {
-    idx_t const slabid = inds[n] / TILE_SIZES[0];
+    fidx_t const slabid = inds[n] / TILE_SIZES[0];
     slabs[1 + slabid] += 1;
   }
 
@@ -56,7 +56,7 @@ static idx_t * p_mkslabptr(
 * @return The number of unique indices found in ind[start:end].
 */
 static idx_t p_fill_uniques(
-  idx_t const * const inds,
+  fidx_t const * const inds,
   idx_t const start,
   idx_t const end,
   idx_t * const seen,
@@ -124,7 +124,7 @@ static void p_tile_uniques(
   }
 
   /* place nnz */
-  idx_t const * const ind = src->ind[mode];
+  fidx_t const * const ind = src->ind[mode];
   for(idx_t n=start; n < end; ++n) {
     idx_t const index = tmkr[seen[ind[n]] / tsize];
     for(idx_t m=0; m < src->nmodes; ++m) {
@@ -314,7 +314,7 @@ idx_t * tt_densetile(
   /* copy data into old struct */
   memcpy(tt->vals, newtt->vals, tt->nnz * sizeof(val_t));
   for(idx_t m=0; m < nmodes; ++m) {
-    memcpy(tt->ind[m], newtt->ind[m], tt->nnz * sizeof(idx_t));
+    memcpy(tt->ind[m], newtt->ind[m], tt->nnz * sizeof(fidx_t));
   }
   tt_free(newtt);
 

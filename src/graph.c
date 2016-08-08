@@ -149,7 +149,7 @@ static adj_t p_count_adj_size(
       idx_t const start = pt->fptr[d-1][parent_start];
       idx_t const end = pt->fptr[d-1][parent_end];
 
-      idx_t const * const fids = pt->fids[d];
+      fidx_t const * const fids = pt->fids[d];
       for(idx_t f=start; f < end; ++f) {
         p_set_update(&set, fids[f], 1);
       }
@@ -263,7 +263,7 @@ static void p_fill_ijk_graph(
       idx_t const end = pt->fptr[d-1][parent_end];
 
       /* compute adjacency info */
-      idx_t const * const fids = pt->fids[d];
+      fidx_t const * const fids = pt->fids[d];
       for(idx_t f=start; f < end; ++f) {
         p_set_update(&set, fids[f], p_count_nnz(pt->fptr, csf->nmodes, d, f));
       }
@@ -421,7 +421,7 @@ hgraph_t * hgraph_nnz_alloc(
   idx_t * const restrict eptr = hg->eptr;
   idx_t offset = 1;
   for(idx_t m=0; m < tt->nmodes; ++m) {
-    idx_t const * const restrict ind = tt->ind[m];
+    fidx_t const * const restrict ind = tt->ind[m];
     for(idx_t n=0; n < tt->nnz; ++n) {
       eptr[offset+ind[n]] += 1;
     }
@@ -443,7 +443,7 @@ hgraph_t * hgraph_nnz_alloc(
 
   offset = 1;
   for(idx_t m=0; m < tt->nmodes; ++m) {
-    idx_t const * const restrict ind = tt->ind[m];
+    fidx_t const * const restrict ind = tt->ind[m];
     for(idx_t n=0; n < tt->nnz; ++n) {
       eind[eptr[offset+ind[n]]++] = n;
     }

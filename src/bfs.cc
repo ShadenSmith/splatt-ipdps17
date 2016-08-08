@@ -47,7 +47,7 @@ permutation_t *perm_bfs_or_rcm(sptensor_t * const tt, int use_rcm)
     csf_sparsity *tile = csf[k].pt;
 
     idx_t *fptr = tile->fptr[tt->nmodes - 2];
-    idx_t *inds = tile->fids[tt->nmodes - 1];
+    fidx_t *inds = tile->fids[tt->nmodes - 1];
 
     idx_t nfibers = tile->nfibs[tt->nmodes - 2];
 

@@ -38,7 +38,7 @@ static void p_stats_basic(
   printf(" NNZ=%"SPLATT_PF_IDX, tt->nnz);
   printf(" DENSITY=%e\n" , tt_density(tt));
 
-  char * bytestr = bytes_str(tt->nnz * ((sizeof(idx_t) * tt->nmodes) + sizeof(val_t)));
+  char * bytestr = bytes_str(tt->nnz * ((sizeof(fidx_t) * tt->nmodes) + sizeof(val_t)));
   printf("COORD-STORAGE=%s\n", bytestr);
   printf("\n");
   free(bytestr);
@@ -230,9 +230,9 @@ void stats_csf(
     idx_t const * const restrict sptr = ct->pt[0].fptr[0];
     idx_t const * const restrict fptr = ct->pt[0].fptr[1];
 
-    idx_t const * const restrict sids = ct->pt[0].fids[0];
-    idx_t const * const restrict fids = ct->pt[0].fids[1];
-    idx_t const * const restrict inds = ct->pt[0].fids[2];
+    fidx_t const * const restrict sids = ct->pt[0].fids[0];
+    fidx_t const * const restrict fids = ct->pt[0].fids[1];
+    fidx_t const * const restrict inds = ct->pt[0].fids[2];
 
     idx_t const nslices = ct->pt[0].nfibs[0];
 

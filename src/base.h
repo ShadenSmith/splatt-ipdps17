@@ -23,6 +23,10 @@
 /* alias splatt types */
 #define val_t splatt_val_t
 #define idx_t splatt_idx_t
+#define fidx_t splatt_fidx_t
+  /* May want to use narrower types for indices within a factor matrix
+   * than indices for accessing non-zeros.
+   */
 
 #define SS_MIN(x,y) ((x) < (y) ? (x) : (y))
 #define SS_MAX(x,y) ((x) > (y) ? (x) : (y))
