@@ -309,6 +309,9 @@ typedef struct splatt_csf
 
   /** @brief Storage size in bytes -- lazy initialized */
   size_t storage;
+
+  /** @brief flops per MTTKRP -- lazy initialized */
+  size_t mttkrp_flops[SPLATT_MAX_NMODES];
 } splatt_csf;
 
 
