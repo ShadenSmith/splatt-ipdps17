@@ -708,6 +708,7 @@ static void p_csf_alloc_densetile(
   for(idx_t t=0; t < ntiles; ++t) {
     idx_t const startnnz = nnz_ptr[t];
     idx_t const endnnz   = nnz_ptr[t+1];
+    assert(endnnz >= startnnz);
     idx_t const ptnnz = endnnz - startnnz;
 
     csf_sparsity * const pt = ct->pt + t;
@@ -737,7 +738,7 @@ static void p_csf_alloc_densetile(
     }
 
     pt->vals = splatt_malloc(ptnnz * sizeof(*(pt->vals)));
-    memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
+    par_memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
 
     /* create fptr entries for the rest of the modes */
     for(idx_t m=0; m < tt->nmodes-1; ++m) {
