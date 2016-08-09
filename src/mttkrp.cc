@@ -560,10 +560,13 @@ static void p_csf_mttkrp_root3_(
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+#pragma omp barrier
+  double tBegin = omp_get_wtime();
+#endif
+
   if (sids == NULL) {
     // When we're working on all slices, use static schedule
-
-
     int nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
     int count = nslices;
     int first = 0;
@@ -590,29 +593,20 @@ static void p_csf_mttkrp_root3_(
     }
     int s_end = tid == nthreads - 1 ? nslices : first;
 
-#ifdef SPLATT_MEASURE_LOAD_BALANCE
-#pragma omp barrier
-    double tBegin = omp_get_wtime();
-#endif
-
-    //printf("[%d] %d-%d %ld\n", tid, s_begin, s_end, fptr[sptr[s_end]] - fptr[sptr[s_begin]]);
-
     for(idx_t s=s_begin; s < s_end; ++s) {
+      idx_t fid = s;
+      val_t *mv = ovals + (fid * NFACTORS);
       p_csf_mttkrp_root3_kernel_<NFACTORS>(
-        vals, sptr, fptr, fids, inds, avals, bvals, ovals + (s * NFACTORS), accumF, accumO, s);
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, accumF, accumO, s);
     }
   }
   else {
-
-#ifdef SPLATT_MEASURE_LOAD_BALANCE
-#pragma omp barrier
-    double tBegin = omp_get_wtime();
-#endif
-
     #pragma omp for schedule(dynamic, 16) nowait
     for(idx_t s=0; s < nslices; ++s) {
+      idx_t fid = sids[s];
+      val_t *mv = ovals + (fid * NFACTORS);
       p_csf_mttkrp_root3_kernel_<NFACTORS, true>(
-        vals, sptr, fptr, fids, inds, avals, bvals, ovals + (sids[s] * NFACTORS), accumF, accumO, s);
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, accumF, accumO, s);
     }
   }
 
@@ -720,116 +714,62 @@ int global_atomic_cache_keys[32*NBUCKETS];
 __declspec(aligned(64)) val_t global_atomic_cache_values[32*NBUCKETS*16];
 #endif
 
-template<int NFACTORS>
-static void p_csf_mttkrp_internal3_(
-  splatt_csf const * const ct,
-  idx_t const tile_id,
-  matrix_t ** mats,
-  thd_info * const thds)
+template<int NFACTORS, bool TILED = false>
+static void p_csf_mttkrp_internal3_kernel_(
+  const val_t *vals,
+  const idx_t *sptr, const idx_t *fptr,
+  const fidx_t *fids, const fidx_t *inds,
+  const val_t *rv, const val_t *bvals, val_t *ovals,
+  val_t *accumF,
+  idx_t s)
 {
-  val_t const * const vals = ct->pt[tile_id].vals;
-
-  idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
-  idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
-
-  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
-
-  val_t const * const avals = mats[ct->dim_perm[0]]->vals;
-  val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
-  val_t * const ovals = mats[MAX_NMODES]->vals;
-
-  val_t * const restrict accumF
-      = (val_t *) thds[omp_get_thread_num()].scratch[0];
-
-  idx_t const nslices = ct->pt[tile_id].nfibs[0];
-
-  int nthreads = omp_get_num_threads();
-  int tid = omp_get_thread_num();
-
-#ifdef SPLATT_ATOMIC_CACHE
-  int *atomic_cache_keys = global_atomic_cache_keys + tid*NBUCKETS;
-  val_t *atomic_cache_values = global_atomic_cache_values + tid*NBUCKETS*NFACTORS;
-  for (int i = 0; i < NBUCKETS; ++i) {
-    atomic_cache_keys[i] = -1;
-  }
-  int hit_cnt = 0, miss_cnt = 0;
-#endif
-
-  int nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
-  int count = nslices;
-  int first = 0;
-  int val = nnz_per_thread*tid;
-  while (count > 0) {
-    int it = first; int step = count/2; it += step;
-    if (fptr[sptr[it]] < val) {
-      first = it + 1;
-      count -= step + 1;
-    }
-    else count = step;
-  }
-  int s_begin = tid == 0 ? 0 : first;
-
-  count = nslices - first;
-  val += nnz_per_thread;
-  while (count > 0) {
-    int it = first; int step = count/2; it += step;
-    if (fptr[sptr[it]] < val) {
-      first = it + 1;
-      count -= step + 1;
-    }
-    else count = step;
-  }
-  int s_end = tid == nthreads - 1 ? nslices : first;
-
-#ifdef SPLATT_MEASURE_LOAD_BALANCE
-#pragma omp barrier
-  double tBegin = omp_get_wtime();
-#endif
-
-  //#pragma omp for schedule(dynamic, 16) nowait
-  for(idx_t s=s_begin; s < s_end; ++s) {
-    idx_t const fid = (sids == NULL) ? s : sids[s];
-
-    /* root row */
-    val_t const * const restrict rv = avals + (fid * NFACTORS);
-
-    /* foreach fiber in slice */
-    for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
-      /* first entry of the fiber is used to initialize accumF */
-      idx_t const jjfirst  = fptr[f];
-      val_t const vfirst   = vals[jjfirst];
-      val_t const * const restrict bv = bvals + (inds[jjfirst] * NFACTORS);
+  /* foreach fiber in slice */
+  for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
+    /* first entry of the fiber is used to initialize accumF */
+    idx_t const jjfirst  = fptr[f];
+    val_t const vfirst   = vals[jjfirst];
+    val_t const * const restrict bv = bvals + (inds[jjfirst] * NFACTORS);
 #ifdef SPLATT_INTRINSIC
 #ifdef __AVX512F__
-      __m512d accumF_v1 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv));
-      __m512d accumF_v2 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv + 8));
+    __m512d accumF_v1 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv));
+    __m512d accumF_v2 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv + 8));
 #else
-      __m256d accumF_v1 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv));
-      __m256d accumF_v2 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 4));
-      __m256d accumF_v3 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 8));
-      __m256d accumF_v4 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 12));
+    __m256d accumF_v1 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv));
+    __m256d accumF_v2 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 4));
+    __m256d accumF_v3 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 8));
+    __m256d accumF_v4 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 12));
 #endif
 
-      /* foreach nnz in fiber */
-      for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
-        val_t const v = vals[jj];
-        val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
+    /* foreach nnz in fiber */
+    for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
+      val_t const v = vals[jj];
+      val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
 #ifdef __AVX512F__
-        accumF_v1 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv), accumF_v1);
-        accumF_v2 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv + 8), accumF_v2);
+      accumF_v1 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv), accumF_v1);
+      accumF_v2 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv + 8), accumF_v2);
 #else
-        accumF_v1 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv), accumF_v1);
-        accumF_v2 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 4), accumF_v2);
-        accumF_v3 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 8), accumF_v3);
-        accumF_v4 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 12), accumF_v4);
+      accumF_v1 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv), accumF_v1);
+      accumF_v2 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 4), accumF_v2);
+      accumF_v3 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 8), accumF_v3);
+      accumF_v4 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 12), accumF_v4);
 #endif
-      }
+    }
 
-      /* scale inner products by row of A and update to M */
-      idx_t oid = fids[f];
-      val_t * const restrict ov = ovals  + (oid * NFACTORS);
+    /* scale inner products by row of A and update to M */
+    idx_t oid = fids[f];
+    val_t * const restrict ov = ovals  + (oid * NFACTORS);
+    if (TILED) {
+#ifdef __AVX512F__
+        _mm512_store_pd(ov, _mm512_fmadd_pd(accumF_v1, _mm512_load_pd(rv), _mm512_load_pd(ov)));
+        _mm512_store_pd(ov + 8, _mm512_fmadd_pd(accumF_v2, _mm512_load_pd(rv + 8), _mm512_load_pd(ov + 8)));
+#else
+        _mm256_store_pd(ov, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(ov)));
+        _mm256_store_pd(ov + 4, _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(rv + 4), _mm256_load_pd(ov + 4)));
+        _mm256_store_pd(ov + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(ov + 8)));
+        _mm256_store_pd(ov + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(ov + 12)));
+#endif
+    } // TILED
+    else {
 #ifdef SPLATT_RTM
       if (_xbegin() == _XBEGIN_STARTED) {
         _mm256_store_pd(ov, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(ov)));
@@ -967,24 +907,31 @@ static void p_csf_mttkrp_internal3_(
         _mm256_store_pd(ov + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(ov + 12)));
 #endif
         splatt_unset_lock(oid);
-#endif
+#endif // !SPLATT_CAS
       }
+    } // !TILED
 #else // SPLATT_INTRINSIC
+    for(idx_t r=0; r < NFACTORS; ++r) {
+      accumF[r] = vfirst * bv[r];
+    }
+
+    /* foreach nnz in fiber */
+    for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
+      val_t const v = vals[jj];
+      val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
       for(idx_t r=0; r < NFACTORS; ++r) {
-        accumF[r] = vfirst * bv[r];
+        accumF[r] += v * bv[r];
       }
+    }
 
-      /* foreach nnz in fiber */
-      for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
-        val_t const v = vals[jj];
-        val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
-        for(idx_t r=0; r < NFACTORS; ++r) {
-          accumF[r] += v * bv[r];
-        }
+    /* write to fiber row */
+    val_t * const restrict ov = ovals  + (fids[f] * NFACTORS);
+    if (TILED) {
+      for(idx_t r=0; r < NFACTORS; ++r) {
+        ov[r] += rv[r] * accumF[r];
       }
-
-      /* write to fiber row */
-      val_t * const restrict ov = ovals  + (fids[f] * NFACTORS);
+    } // TILED
+    else {
 #ifdef SPLATT_RTM
       if (_xbegin() == _XBEGIN_STARTED) {
         for(idx_t r=0; r < NFACTORS; ++r) {
@@ -1011,7 +958,100 @@ static void p_csf_mttkrp_internal3_(
         splatt_unset_lock(fids[f]);
 #endif
       }
+    } // !TILED
 #endif // SPLATT_INTRINSIC
+  }
+}
+
+template<int NFACTORS>
+static void p_csf_mttkrp_internal3_(
+  splatt_csf const * const ct,
+  idx_t const tile_id,
+  matrix_t ** mats,
+  thd_info * const thds)
+{
+  val_t const * const vals = ct->pt[tile_id].vals;
+
+  idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
+  idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
+
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+
+  val_t const * const avals = mats[ct->dim_perm[0]]->vals;
+  val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
+  val_t * const ovals = mats[MAX_NMODES]->vals;
+
+  int tid = omp_get_thread_num();
+  int nthreads = omp_get_num_threads();
+  
+  val_t * const restrict accumF = (val_t *) thds[tid].scratch[0];
+
+  idx_t const nslices = ct->pt[tile_id].nfibs[0];
+
+#ifdef SPLATT_ATOMIC_CACHE
+  int *atomic_cache_keys = global_atomic_cache_keys + tid*NBUCKETS;
+  val_t *atomic_cache_values = global_atomic_cache_values + tid*NBUCKETS*NFACTORS;
+  for (int i = 0; i < NBUCKETS; ++i) {
+    atomic_cache_keys[i] = -1;
+  }
+  int hit_cnt = 0, miss_cnt = 0;
+#endif
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+#pragma omp barrier
+  double tBegin = omp_get_wtime();
+#endif
+
+  if (sids == NULL) {
+    // When we're working on all slices, use static schedule
+    int nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
+    int count = nslices;
+    int first = 0;
+    int val = nnz_per_thread*tid;
+    while (count > 0) {
+      int it = first; int step = count/2; it += step;
+      if (fptr[sptr[it]] < val) {
+        first = it + 1;
+        count -= step + 1;
+      }
+      else count = step;
+    }
+    int s_begin = tid == 0 ? 0 : first;
+
+    count = nslices - first;
+    val += nnz_per_thread;
+    while (count > 0) {
+      int it = first; int step = count/2; it += step;
+      if (fptr[sptr[it]] < val) {
+        first = it + 1;
+        count -= step + 1;
+      }
+      else count = step;
+    }
+    int s_end = tid == nthreads - 1 ? nslices : first;
+
+    for(idx_t s=s_begin; s < s_end; ++s) {
+      idx_t fid = s;
+
+      /* root row */
+      val_t const * const restrict rv = avals + (fid * NFACTORS);
+
+      p_csf_mttkrp_internal3_kernel_<NFACTORS>(
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
+    }
+  }
+  else {
+    #pragma omp for schedule(dynamic, 16) nowait
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t fid = sids[s];
+
+      /* root row */
+      val_t const * const restrict rv = avals + (fid * NFACTORS);
+
+      p_csf_mttkrp_internal3_kernel_<NFACTORS>(
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
     }
   }
 
@@ -1073,18 +1113,6 @@ static void p_csf_mttkrp_internal3(
   thd_info * const thds)
 {
   assert(ct->nmodes == 3);
-  val_t const * const vals = ct->pt[tile_id].vals;
-
-  idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
-  idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
-
-  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
-
-  val_t const * const avals = mats[ct->dim_perm[0]]->vals;
-  val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
-  val_t * const ovals = mats[MAX_NMODES]->vals;
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
 #ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
@@ -1094,6 +1122,19 @@ static void p_csf_mttkrp_internal3(
   else
 #endif
   {
+    val_t const * const vals = ct->pt[tile_id].vals;
+
+    idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
+    idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
+
+    fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+    fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+    fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+
+    val_t const * const avals = mats[ct->dim_perm[0]]->vals;
+    val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
+    val_t * const ovals = mats[MAX_NMODES]->vals;
+
     val_t * const restrict accumF
         = (val_t *) thds[omp_get_thread_num()].scratch[0];
 
@@ -1136,90 +1177,46 @@ static void p_csf_mttkrp_internal3(
   }
 }
 
-template<int NFACTORS>
-static void p_csf_mttkrp_leaf3_(
-  splatt_csf const * const ct,
-  idx_t const tile_id,
-  matrix_t ** mats,
-  thd_info * const thds)
+template<int NFACTORS, bool TILED = false>
+static void p_csf_mttkrp_leaf3_kernel_(
+  const val_t *vals,
+  const idx_t *sptr, const idx_t *fptr,
+  const fidx_t *fids, const fidx_t *inds,
+  const val_t *rv, const val_t *bvals, val_t *ovals,
+  val_t *accumF,
+  idx_t s)
 {
-  val_t const * const vals = ct->pt[tile_id].vals;
-
-  idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
-  idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
-
-  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
-
-  val_t const * const avals = mats[ct->dim_perm[0]]->vals;
-  val_t const * const bvals = mats[ct->dim_perm[1]]->vals;
-  val_t * const ovals = mats[MAX_NMODES]->vals;
-
-  val_t * const restrict accumF
-      = (val_t *) thds[omp_get_thread_num()].scratch[0];
-
-  idx_t const nslices = ct->pt[tile_id].nfibs[0];
-  int nthreads = omp_get_num_threads();
-  int tid = omp_get_thread_num();
-
-  int nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
-  int count = nslices;
-  int first = 0;
-  int val = nnz_per_thread*tid;
-  while (count > 0) {
-    int it = first; int step = count/2; it += step;
-    if (fptr[sptr[it]] < val) {
-      first = it + 1;
-      count -= step + 1;
-    }
-    else count = step;
-  }
-  int s_begin = tid == 0 ? 0 : first;
-
-  count = nslices - first;
-  val += nnz_per_thread;
-  while (count > 0) {
-    int it = first; int step = count/2; it += step;
-    if (fptr[sptr[it]] < val) {
-      first = it + 1;
-      count -= step + 1;
-    }
-    else count = step;
-  }
-  int s_end = tid == nthreads - 1 ? nslices : first;
-
-#ifdef SPLATT_MEASURE_LOAD_BALANCE
-#pragma omp barrier
-  double tBegin = omp_get_wtime();
-#endif
-
-  //#pragma omp for schedule(dynamic, 16) nowait
-  for(idx_t s=s_begin; s < s_end; ++s) {
-    idx_t const fid = s;
-
-    /* root row */
-    val_t const * const restrict rv = avals + (fid * NFACTORS);
-
-    /* foreach fiber in slice */
-    for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
-      /* fill fiber with hada */
-      val_t const * const restrict av = bvals  + (fids[f] * NFACTORS);
+  /* foreach fiber in slice */
+  for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
+    /* fill fiber with hada */
+    val_t const * const restrict av = bvals  + (fids[f] * NFACTORS);
 #ifdef SPLATT_INTRINSIC
 #ifdef __AVX512F__
-      __m512d accumF_v1 = _mm512_mul_pd(_mm512_load_pd(rv), _mm512_load_pd(av));
-      __m512d accumF_v2 = _mm512_mul_pd(_mm512_load_pd(rv + 8), _mm512_load_pd(av + 8));
+    __m512d accumF_v1 = _mm512_mul_pd(_mm512_load_pd(rv), _mm512_load_pd(av));
+    __m512d accumF_v2 = _mm512_mul_pd(_mm512_load_pd(rv + 8), _mm512_load_pd(av + 8));
 #else
-      __m256d accumF_v1 = _mm256_mul_pd(_mm256_load_pd(rv), _mm256_load_pd(av));
-      __m256d accumF_v2 = _mm256_mul_pd(_mm256_load_pd(rv + 4), _mm256_load_pd(av + 4));
-      __m256d accumF_v3 = _mm256_mul_pd(_mm256_load_pd(rv + 8), _mm256_load_pd(av + 8));
-      __m256d accumF_v4 = _mm256_mul_pd(_mm256_load_pd(rv + 12), _mm256_load_pd(av + 12));
+    __m256d accumF_v1 = _mm256_mul_pd(_mm256_load_pd(rv), _mm256_load_pd(av));
+    __m256d accumF_v2 = _mm256_mul_pd(_mm256_load_pd(rv + 4), _mm256_load_pd(av + 4));
+    __m256d accumF_v3 = _mm256_mul_pd(_mm256_load_pd(rv + 8), _mm256_load_pd(av + 8));
+    __m256d accumF_v4 = _mm256_mul_pd(_mm256_load_pd(rv + 12), _mm256_load_pd(av + 12));
 #endif
 
-      /* foreach nnz in fiber, scale with hada and write to ovals */
-      for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
-        val_t const v = vals[jj];
-        val_t * const restrict ov = ovals + (inds[jj] * NFACTORS);
+    /* foreach nnz in fiber, scale with hada and write to ovals */
+    for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
+      val_t const v = vals[jj];
+      val_t * const restrict ov = ovals + (inds[jj] * NFACTORS);
+      if (TILED) {
+#ifdef __AVX512F__
+        _mm512_store_pd(ov, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v1, _mm512_load_pd(ov)));
+        _mm512_store_pd(ov + 8, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v2, _mm512_load_pd(ov + 8)));
+#else
+        _mm256_store_pd(ov, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v1, _mm256_load_pd(ov)));
+        _mm256_store_pd(ov + 4, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v2, _mm256_load_pd(ov + 4)));
+        _mm256_store_pd(ov + 8, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v3, _mm256_load_pd(ov + 8)));
+        _mm256_store_pd(ov + 12, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v4, _mm256_load_pd(ov + 12)));
+#endif
+      }
+      else {
 #ifdef SPLATT_RTM
         if (_xbegin() == _XBEGIN_STARTED) {
           _mm256_store_pd(ov, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v1, _mm256_load_pd(ov)));
@@ -1327,17 +1324,24 @@ static void p_csf_mttkrp_leaf3_(
           splatt_unset_lock(inds[jj]);
 #endif
         }
-      }
+      } // !TILED
+    }
 
 #else // SPLATT_INTRINSIC
-      for(idx_t r=0; r < NFACTORS; ++r) {
-        accumF[r] = rv[r] * av[r];
-      }
+    for(idx_t r=0; r < NFACTORS; ++r) {
+      accumF[r] = rv[r] * av[r];
+    }
 
-      /* foreach nnz in fiber, scale with hada and write to ovals */
-      for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
-        val_t const v = vals[jj];
-        val_t * const restrict ov = ovals + (inds[jj] * NFACTORS);
+    /* foreach nnz in fiber, scale with hada and write to ovals */
+    for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
+      val_t const v = vals[jj];
+      val_t * const restrict ov = ovals + (inds[jj] * NFACTORS);
+      if (TILED) {
+        for(idx_t r=0; r < NFACTORS; ++r) {
+          ov[r] += v * accumF[r];
+        }
+      }
+      else {
 #ifdef SPLATT_RTM
         if (_xbegin() == _XBEGIN_STARTED) {
           for(idx_t r=0; r < NFACTORS; ++r) {
@@ -1364,8 +1368,92 @@ static void p_csf_mttkrp_leaf3_(
           splatt_unset_lock(inds[jj]);
 #endif
         }
-      }
+      } // !TILED
+    }
 #endif // SPLATT_INTRINSIC
+  }
+}
+
+template<int NFACTORS>
+static void p_csf_mttkrp_leaf3_(
+  splatt_csf const * const ct,
+  idx_t const tile_id,
+  matrix_t ** mats,
+  thd_info * const thds)
+{
+  val_t const * const vals = ct->pt[tile_id].vals;
+
+  idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
+  idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
+
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+
+  val_t const * const avals = mats[ct->dim_perm[0]]->vals;
+  val_t const * const bvals = mats[ct->dim_perm[1]]->vals;
+  val_t * const ovals = mats[MAX_NMODES]->vals;
+
+  int nthreads = omp_get_num_threads();
+  int tid = omp_get_thread_num();
+
+  val_t * const restrict accumF = (val_t *) thds[tid].scratch[0];
+
+  idx_t const nslices = ct->pt[tile_id].nfibs[0];
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+#pragma omp barrier
+  double tBegin = omp_get_wtime();
+#endif
+
+  if (sids == NULL) {
+    // When we're working on all slices, use static schedule
+    int nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
+    int count = nslices;
+    int first = 0;
+    int val = nnz_per_thread*tid;
+    while (count > 0) {
+      int it = first; int step = count/2; it += step;
+      if (fptr[sptr[it]] < val) {
+        first = it + 1;
+        count -= step + 1;
+      }
+      else count = step;
+    }
+    int s_begin = tid == 0 ? 0 : first;
+
+    count = nslices - first;
+    val += nnz_per_thread;
+    while (count > 0) {
+      int it = first; int step = count/2; it += step;
+      if (fptr[sptr[it]] < val) {
+        first = it + 1;
+        count -= step + 1;
+      }
+      else count = step;
+    }
+    int s_end = tid == nthreads - 1 ? nslices : first;
+
+    for(idx_t s=s_begin; s < s_end; ++s) {
+      idx_t const fid = s;
+
+      /* root row */
+      val_t const * const restrict rv = avals + (fid * NFACTORS);
+
+      p_csf_mttkrp_leaf3_kernel_<NFACTORS>(
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
+    }
+  }
+  else {
+    #pragma omp for schedule(dynamic, 16) nowait
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = sids[s];
+
+      /* root row */
+      val_t const * const restrict rv = avals + (fid * NFACTORS);
+
+      p_csf_mttkrp_leaf3_kernel_<NFACTORS>(
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
     }
   }
 
@@ -1598,26 +1686,43 @@ static void p_csf_mttkrp_leaf_tiled3(
       = (val_t *) thds[omp_get_thread_num()].scratch[0];
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
-  for(idx_t s=0; s < nslices; ++s) {
-    idx_t const fid = (sids == NULL) ? s : sids[s];
 
-    /* root row */
-    val_t const * const restrict rv = avals + (fid * nfactors);
+#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
+  if (nfactors == 16) {
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
 
-    /* foreach fiber in slice */
-    for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
-      /* fill fiber with hada */
-      val_t const * const restrict av = bvals  + (fids[f] * nfactors);
-      for(idx_t r=0; r < nfactors; ++r) {
-        accumF[r] = rv[r] * av[r];
-      }
+      /* root row */
+      val_t const * const restrict rv = avals + (fid * nfactors);
 
-      /* foreach nnz in fiber, scale with hada and write to ovals */
-      for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
-        val_t const v = vals[jj];
-        val_t * const restrict ov = ovals + (inds[jj] * nfactors);
+      p_csf_mttkrp_leaf3_kernel_<16, true>(
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
+    }
+  }
+  else
+#endif
+  {
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
+
+      /* root row */
+      val_t const * const restrict rv = avals + (fid * nfactors);
+
+      /* foreach fiber in slice */
+      for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
+        /* fill fiber with hada */
+        val_t const * const restrict av = bvals  + (fids[f] * nfactors);
         for(idx_t r=0; r < nfactors; ++r) {
-          ov[r] += v * accumF[r];
+          accumF[r] = rv[r] * av[r];
+        }
+
+        /* foreach nnz in fiber, scale with hada and write to ovals */
+        for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
+          val_t const v = vals[jj];
+          val_t * const restrict ov = ovals + (inds[jj] * nfactors);
+          for(idx_t r=0; r < nfactors; ++r) {
+            ov[r] += v * accumF[r];
+          }
         }
       }
     }
@@ -1817,35 +1922,52 @@ static void p_csf_mttkrp_internal_tiled3(
       = (val_t *) thds[omp_get_thread_num()].scratch[0];
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
-  for(idx_t s=0; s < nslices; ++s) {
-    idx_t const fid = (sids == NULL) ? s : sids[s];
 
-    /* root row */
-    val_t const * const restrict rv = avals + (fid * nfactors);
+#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
+  if (nfactors == 16) {
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
 
-    /* foreach fiber in slice */
-    for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
-      /* first entry of the fiber is used to initialize accumF */
-      idx_t const jjfirst  = fptr[f];
-      val_t const vfirst   = vals[jjfirst];
-      val_t const * const restrict bv = bvals + (inds[jjfirst] * nfactors);
-      for(idx_t r=0; r < nfactors; ++r) {
-        accumF[r] = vfirst * bv[r];
-      }
+      /* root row */
+      val_t const * const restrict rv = avals + (fid * nfactors);
 
-      /* foreach nnz in fiber */
-      for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
-        val_t const v = vals[jj];
-        val_t const * const restrict bv = bvals + (inds[jj] * nfactors);
+      p_csf_mttkrp_internal3_kernel_<16, true>(
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
+    }
+  }
+  else
+#endif
+  {
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
+
+      /* root row */
+      val_t const * const restrict rv = avals + (fid * nfactors);
+
+      /* foreach fiber in slice */
+      for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
+        /* first entry of the fiber is used to initialize accumF */
+        idx_t const jjfirst  = fptr[f];
+        val_t const vfirst   = vals[jjfirst];
+        val_t const * const restrict bv = bvals + (inds[jjfirst] * nfactors);
         for(idx_t r=0; r < nfactors; ++r) {
-          accumF[r] += v * bv[r];
+          accumF[r] = vfirst * bv[r];
         }
-      }
 
-      /* write to fiber row */
-      val_t * const restrict ov = ovals  + (fids[f] * nfactors);
-      for(idx_t r=0; r < nfactors; ++r) {
-        ov[r] += rv[r] * accumF[r];
+        /* foreach nnz in fiber */
+        for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
+          val_t const v = vals[jj];
+          val_t const * const restrict bv = bvals + (inds[jj] * nfactors);
+          for(idx_t r=0; r < nfactors; ++r) {
+            accumF[r] += v * bv[r];
+          }
+        }
+
+        /* write to fiber row */
+        val_t * const restrict ov = ovals  + (fids[f] * nfactors);
+        for(idx_t r=0; r < nfactors; ++r) {
+          ov[r] += rv[r] * accumF[r];
+        }
       }
     }
   }
