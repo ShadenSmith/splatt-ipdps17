@@ -649,12 +649,8 @@ static void p_csf_mttkrp_root3(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
-  thd_info * const thds,
-  double const * const opts)
+  thd_info * const thds)
 {
-  sp_timer_t time;
-  timer_fstart(&time); 
-
   assert(ct->nmodes == 3);
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
@@ -714,21 +710,6 @@ static void p_csf_mttkrp_root3(
         }
       }
     }
-  }
-
-#pragma omp barrier
-  timer_stop(&time);
-  if (0 == omp_get_thread_num() &&
-      opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
-
-    idx_t bdim = ct->dims[ct->dim_perm[1]];
-    idx_t adim = ct->dims[ct->dim_perm[2]];
-    size_t mbytes = (bdim + adim) * nfactors * sizeof(val_t);
-    size_t fbytes = ct->storage;
-    double gbps = (mbytes + fbytes)/time.seconds/1e9;
-
-    printf("       p_csf_mttkrp_root3 (%0.3fs, %.3f GBps)\n",
-        time.seconds, gbps);
   }
 }
 
@@ -1089,12 +1070,8 @@ static void p_csf_mttkrp_internal3(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
-  thd_info * const thds,
-  double const * const opts)
+  thd_info * const thds)
 {
-  sp_timer_t time;
-  timer_fstart(&time);
-
   assert(ct->nmodes == 3);
   val_t const * const vals = ct->pt[tile_id].vals;
 
@@ -1156,21 +1133,6 @@ static void p_csf_mttkrp_internal3(
         splatt_unset_lock(fids[f]);
       }
     }
-  }
-
-#pragma omp barrier
-  timer_stop(&time);
-  if (0 == omp_get_thread_num() && 
-      opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
-
-    idx_t bdim = ct->dims[ct->dim_perm[0]];
-    idx_t adim = ct->dims[ct->dim_perm[2]];
-    size_t mbytes = (bdim + adim) * nfactors * sizeof(val_t);
-    size_t fbytes = ct->storage;
-    double gbps = (mbytes + fbytes)/time.seconds/1e9;
-
-    printf("       p_csf_mttkrp_internal3 (%0.3fs, %.3f GBps)\n",
-        time.seconds, gbps);
   }
 }
 
@@ -1430,12 +1392,8 @@ static void p_csf_mttkrp_leaf3(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
-  thd_info * const thds,
-  double const * const opts)
+  thd_info * const thds)
 {
-  sp_timer_t time;
-  timer_fstart(&time);
-
   assert(ct->nmodes == 3);
   val_t const * const vals = ct->pt[tile_id].vals;
 
@@ -1489,21 +1447,6 @@ static void p_csf_mttkrp_leaf3(
         }
       }
     }
-  }
-
-#pragma omp barrier
-  timer_stop(&time);
-  if (0 == omp_get_thread_num() && 
-      opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
-
-    idx_t adim = ct->dims[ct->dim_perm[0]];
-    idx_t bdim = ct->dims[ct->dim_perm[1]];
-    size_t mbytes = (bdim + adim) * nfactors * sizeof(val_t);
-    size_t fbytes = ct->storage;
-    double gbps = (mbytes + fbytes)/time.seconds/1e9;
-
-    printf("       p_csf_mttkrp_leaf3 (%0.3fs, %.3f GBps)\n",
-        time.seconds, gbps);
   }
 }
 
@@ -1573,8 +1516,7 @@ static void p_csf_mttkrp_root(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
-  thd_info * const thds,
-  double const * const opts)
+  thd_info * const thds)
 {
   /* extract tensor structures */
   idx_t const nmodes = ct->nmodes;
@@ -1586,7 +1528,7 @@ static void p_csf_mttkrp_root(
   }
 
   if(nmodes == 3) {
-    p_csf_mttkrp_root3(ct, tile_id, mats, thds, opts);
+    p_csf_mttkrp_root3(ct, tile_id, mats, thds);
     return;
   }
 
@@ -1771,8 +1713,7 @@ static void p_csf_mttkrp_leaf(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
-  thd_info * const thds,
-  double const * const opts)
+  thd_info * const thds)
 {
   /* extract tensor structures */
   val_t const * const vals = ct->pt[tile_id].vals;
@@ -1782,7 +1723,7 @@ static void p_csf_mttkrp_leaf(
     return;
   }
   if(nmodes == 3) {
-    p_csf_mttkrp_leaf3(ct, tile_id, mats, thds, opts);
+    p_csf_mttkrp_leaf3(ct, tile_id, mats, thds);
     return;
   }
 
@@ -2005,8 +1946,7 @@ static void p_csf_mttkrp_internal(
   idx_t const tile_id,
   matrix_t ** mats,
   idx_t const mode,
-  thd_info * const thds,
-  double const * const opts)
+  thd_info * const thds)
 {
   /* extract tensor structures */
   idx_t const nmodes = ct->nmodes;
@@ -2016,7 +1956,7 @@ static void p_csf_mttkrp_internal(
     return;
   }
   if(nmodes == 3) {
-    p_csf_mttkrp_internal3(ct, tile_id, mats, thds, opts);
+    p_csf_mttkrp_internal3(ct, tile_id, mats, thds);
     return;
   }
 
@@ -2102,6 +2042,9 @@ static void p_root_decide(
 {
   idx_t const nmodes = tensor->nmodes;
 
+  sp_timer_t time;
+  timer_fstart(&time);
+
   matrix_t * const M = mats[MAX_NMODES];
 #ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nmodes != 3 || tensor->which_tile != SPLATT_NOTILE || M->J != 16)
@@ -2115,13 +2058,13 @@ static void p_root_decide(
     idx_t tid = 0;
     switch(tensor->which_tile) {
     case SPLATT_NOTILE:
-      p_csf_mttkrp_root(tensor, 0, mats, thds, opts);
+      p_csf_mttkrp_root(tensor, 0, mats, thds);
       break;
     case SPLATT_DENSETILE:
       /* this mode may not be tiled due to minimum tiling depth */
       if(opts[SPLATT_OPTION_TILEDEPTH] > 0) {
         for(idx_t t=0; t < tensor->ntiles; ++t) {
-          p_csf_mttkrp_root(tensor, t, mats, thds, opts);
+          p_csf_mttkrp_root(tensor, t, mats, thds);
           #pragma omp barrier
         }
       } else {
@@ -2140,12 +2083,29 @@ static void p_root_decide(
 
     /* XXX */
     case SPLATT_SYNCTILE:
+      assert(false);
       break;
     case SPLATT_COOPTILE:
+      assert(false);
       break;
     }
     timer_stop(&thds[omp_get_thread_num()].ttime);
   } /* end omp parallel */
+
+  timer_stop(&time);
+  if (opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
+    size_t mbytes = 0;
+    assert(mode == tensor->dim_perm[0]);
+    for (int i = 0; i < tensor->nmodes; ++i) {
+      if (i != mode) mbytes += tensor->dims[i] * M->J * sizeof(val_t);
+    }
+    size_t fbytes = tensor->storage;
+    double gbps = (mbytes + fbytes)/time.seconds/1e9;
+    double gflops = tensor->mttkrp_flops[mode]/time.seconds/1e9;
+
+    printf("       csf_mttkrp_root (%0.3fs, %.3f GBps, %.3f GF/s)\n",
+        time.seconds, gbps, gflops);
+  }
 }
 
 
@@ -2159,6 +2119,9 @@ static void p_leaf_decide(
   idx_t const nmodes = tensor->nmodes;
   idx_t const depth = nmodes - 1;
 
+  sp_timer_t time;
+  timer_fstart(&time);
+
   matrix_t * const M = mats[MAX_NMODES];
   par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
@@ -2170,13 +2133,13 @@ static void p_leaf_decide(
     idx_t tid = 0;
     switch(tensor->which_tile) {
     case SPLATT_NOTILE:
-      p_csf_mttkrp_leaf(tensor, 0, mats, thds, opts);
+      p_csf_mttkrp_leaf(tensor, 0, mats, thds);
       break;
     case SPLATT_DENSETILE:
       /* this mode may not be tiled due to minimum tiling depth */
       if(opts[SPLATT_OPTION_TILEDEPTH] > depth) {
         for(idx_t t=0; t < tensor->ntiles; ++t) {
-          p_csf_mttkrp_leaf(tensor, 0, mats, thds, opts);
+          p_csf_mttkrp_leaf(tensor, 0, mats, thds);
         }
       } else {
         #pragma omp for schedule(dynamic, 1) nowait
@@ -2199,6 +2162,21 @@ static void p_leaf_decide(
     }
     timer_stop(&thds[omp_get_thread_num()].ttime);
   } /* end omp parallel */
+
+  timer_stop(&time);
+  if (opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
+    size_t mbytes = 0;
+    assert(mode == tensor->dim_perm[2]);
+    for (int i = 0; i < tensor->nmodes; ++i) {
+      if (i != mode) mbytes += tensor->dims[i] * M->J * sizeof(val_t);
+    }
+    size_t fbytes = tensor->storage;
+    double gbps = (mbytes + fbytes)/time.seconds/1e9;
+    double gflops = tensor->mttkrp_flops[mode]/time.seconds/1e9;
+
+    printf("       csf_mttkrp_leaf (%0.3fs, %.3f GBps, %.3f GF/s)\n",
+        time.seconds, gbps, gflops);
+  }
 }
 
 
@@ -2212,6 +2190,9 @@ static void p_intl_decide(
   idx_t const nmodes = tensor->nmodes;
   idx_t const depth = csf_mode_depth(mode, tensor->dim_perm, nmodes);
 
+  sp_timer_t time;
+  timer_fstart(&time);
+
   matrix_t * const M = mats[MAX_NMODES];
   par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
@@ -2222,13 +2203,13 @@ static void p_intl_decide(
     idx_t tid = 0;
     switch(tensor->which_tile) {
     case SPLATT_NOTILE:
-      p_csf_mttkrp_internal(tensor, 0, mats, mode, thds, opts);
+      p_csf_mttkrp_internal(tensor, 0, mats, mode, thds);
       break;
     case SPLATT_DENSETILE:
       /* this mode may not be tiled due to minimum tiling depth */
       if(opts[SPLATT_OPTION_TILEDEPTH] > depth) {
         for(idx_t t=0; t < tensor->ntiles; ++t) {
-          p_csf_mttkrp_internal(tensor, t, mats, mode, thds, opts);
+          p_csf_mttkrp_internal(tensor, t, mats, mode, thds);
         }
       } else {
         #pragma omp for schedule(dynamic, 1) nowait
@@ -2245,13 +2226,30 @@ static void p_intl_decide(
 
     /* XXX */
     case SPLATT_SYNCTILE:
+      assert(false);
       break;
     case SPLATT_COOPTILE:
+      assert(false);
       break;
     }
 
     timer_stop(&thds[omp_get_thread_num()].ttime);
   } /* end omp parallel */
+
+  timer_stop(&time);
+  if (opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
+    size_t mbytes = 0;
+    assert(mode == tensor->dim_perm[1]);
+    for (int i = 0; i < tensor->nmodes; ++i) {
+      if (i != mode) mbytes += tensor->dims[i] * M->J * sizeof(val_t);
+    }
+    size_t fbytes = tensor->storage;
+    double gbps = (mbytes + fbytes)/time.seconds/1e9;
+    double gflops = tensor->mttkrp_flops[mode]/time.seconds/1e9;
+
+    printf("       csf_mttkrp_internal (%0.3fs, %.3f GBps, %.3f GF/s)\n",
+        time.seconds, gbps, gflops);
+  }
 }
 
 
