@@ -178,7 +178,7 @@ void splatt_cpd_cmd(
 
   /* print CPD stats? */
   if(which_verb >= SPLATT_VERBOSITY_LOW) {
-    stats_csf(csf, csf_get_ncopies(args.opts, csf->nmodes));
+    stats_csf(csf, csf_get_ncopies(args.opts, csf->nmodes), args.opts);
     cpd_stats(csf, args.nfactors, args.opts);
   }
 

@@ -445,7 +445,7 @@ permutation_t *perm_matching(sptensor_t * const tt)
     splatt_csf_read(csf, "/home/jpark103/tensor/delicious.6.csf", 6);
     printf("splatt_csf_read takes %f\n", omp_get_wtime() - read_time);
 
-    stats_csf(csf, 1);
+    stats_csf(csf, 1, opts);
   }
 
   idx_t max_dims = 0;

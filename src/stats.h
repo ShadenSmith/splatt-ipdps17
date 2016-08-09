@@ -63,7 +63,7 @@ void stats_tt(
 * @param ct The CSF tensor to analyze.
 */
 void stats_csf(
-  splatt_csf const *ct, int ncopies);
+  splatt_csf const *ct, int ncopies, double const * const opts);
 
 
 #define cpd_stats splatt_cpd_stats

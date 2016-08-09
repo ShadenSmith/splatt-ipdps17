@@ -194,7 +194,7 @@ void stats_tt(
 
 
 void stats_csf(
-  splatt_csf const *ct, int ncopies)
+  splatt_csf const *ct, int ncopies, double const * const opts)
 {
   printf("nmodes: %"SPLATT_PF_IDX" nnz: %"SPLATT_PF_IDX"\n", ct->nmodes,
       ct->nnz);
@@ -208,36 +208,19 @@ void stats_csf(
       printf("->%"SPLATT_PF_IDX"", ct->dim_perm[m]);
     }
     printf(")\n");
-    /*printf("ntiles: %"SPLATT_PF_IDX" tile dims: %"SPLATT_PF_IDX"", ct->ntiles,
+    printf("ntiles: %"SPLATT_PF_IDX" tile dims: %"SPLATT_PF_IDX"", ct->ntiles,
         ct->tile_dims[0]);
     for(idx_t m=1; m < ct->nmodes; ++m) {
       printf("x%"SPLATT_PF_IDX"", ct->tile_dims[m]);
     }
 
     idx_t empty = 0;
-    for(idx_t t=0; t < ct->ntiles; ++t) {
-      if(ct->pt[t].vals == NULL) {
-        ++empty;
-      }
-    }
-
-    printf("  empty: %"SPLATT_PF_IDX" (%0.1f%%)\n", empty,
-        100. * (double)empty/ (double)ct->ntiles);*/
 
     unsigned long long total_width = 0;
     int max_width = 0;
 
-    idx_t const * const restrict sptr = ct->pt[0].fptr[0];
-    idx_t const * const restrict fptr = ct->pt[0].fptr[1];
-
-    fidx_t const * const restrict sids = ct->pt[0].fids[0];
-    fidx_t const * const restrict fids = ct->pt[0].fids[1];
-    fidx_t const * const restrict inds = ct->pt[0].fids[2];
-
-    idx_t const nslices = ct->pt[0].nfibs[0];
-
-    idx_t nfibers = sptr[nslices];
-    printf("  nslices: %"SPLATT_PF_IDX" nfibers: %"SPLATT_PF_IDX"\n", nslices, nfibers);
+    idx_t total_nslices = 0;
+    idx_t total_nfibers = 0;
 
     idx_t min_slice_nnz = INT_MAX;
     idx_t max_slice_nnz = 0;
@@ -247,70 +230,70 @@ void stats_csf(
     idx_t max_fiber_nnz = 0;
     double sq_sum_fiber_nnz = 0;
 
-#ifdef SPLATT_WRITE_NNZ_HIST
-    FILE *fp_slice, *fp_fiber;
-    if (k == 0) {
-      fp_slice = fopen("slice0.hist", "w");
-      fp_fiber = fopen("fiber0.hist", "w");
-    }
-    else {
-      fp_slice = fopen("slice1.hist", "w");
-      fp_fiber = fopen("fiber1.hist", "w");
-    }
-#endif
+    for (idx_t t=0; t < ct->ntiles; ++t) {
+      if(ct->pt[t].vals == NULL) {
+        ++empty;
+      }
+
+      idx_t const * const restrict sptr = ct->pt[t].fptr[0];
+      idx_t const * const restrict fptr = ct->pt[t].fptr[1];
+
+      fidx_t const * const restrict sids = ct->pt[t].fids[0];
+      fidx_t const * const restrict fids = ct->pt[t].fids[1];
+      fidx_t const * const restrict inds = ct->pt[t].fids[2];
+
+      idx_t const nslices = ct->pt[t].nfibs[0];
+      total_nslices += nslices;
+
+      idx_t nfibers = sptr[nslices];
+      total_nfibers += nfibers;
 
 #pragma omp parallel for reduction(min:min_slice_nnz,min_fiber_nnz) reduction(max:max_slice_nnz,max_fiber_nnz,max_width) reduction(+:sq_sum_slice_nnz,sq_sum_fiber_nnz,total_width)
-    for(idx_t s=0; s < nslices; ++s) {
-      idx_t const fid = (sids == NULL) ? s : sids[s];
+      for(idx_t s=0; s < nslices; ++s) {
+        idx_t const fid = (sids == NULL) ? s : sids[s];
 
-      idx_t slice_nnz = fptr[sptr[s+1]] - fptr[sptr[s]];
-      min_slice_nnz = SS_MIN(min_slice_nnz, slice_nnz);
-      max_slice_nnz = SS_MAX(max_slice_nnz, slice_nnz);
-      sq_sum_slice_nnz += slice_nnz*slice_nnz;
+        idx_t slice_nnz = fptr[sptr[s+1]] - fptr[sptr[s]];
+        min_slice_nnz = SS_MIN(min_slice_nnz, slice_nnz);
+        max_slice_nnz = SS_MAX(max_slice_nnz, slice_nnz);
+        sq_sum_slice_nnz += slice_nnz*slice_nnz;
 
-#ifdef SPLATT_WRITE_NNZ_HIST
-      fprintf(fp_slice, "%ld\n", slice_nnz);
-#endif
+        for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
+          idx_t fiber_nnz = fptr[f+1] - fptr[f];
+          min_fiber_nnz = SS_MIN(min_fiber_nnz, fiber_nnz);
+          max_fiber_nnz = SS_MAX(max_fiber_nnz, fiber_nnz);
+          sq_sum_fiber_nnz += fiber_nnz*fiber_nnz;
 
-      for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
-        idx_t fiber_nnz = fptr[f+1] - fptr[f];
-        min_fiber_nnz = SS_MIN(min_fiber_nnz, fiber_nnz);
-        max_fiber_nnz = SS_MAX(max_fiber_nnz, fiber_nnz);
-        sq_sum_fiber_nnz += fiber_nnz*fiber_nnz;
-
-        idx_t min_ind = INT_MAX, max_ind = 0;
-        for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
-          min_ind = SS_MIN(inds[jj], min_ind);
-          max_ind = SS_MAX(inds[jj], max_ind);
+          idx_t min_ind = INT_MAX, max_ind = 0;
+          for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
+            min_ind = SS_MIN(inds[jj], min_ind);
+            max_ind = SS_MAX(inds[jj], max_ind);
+          }
+          if (fptr[f+1] > fptr[f]) {
+            int width = max_ind - min_ind;
+            total_width += width;
+            max_width = SS_MAX(width, max_width);
+          }
         }
-        if (fptr[f+1] > fptr[f]) {
-          int width = max_ind - min_ind;
-          total_width += width;
-          max_width = SS_MAX(width, max_width);
-        }
-
-#ifdef SPLATT_WRITE_NNZ_HIST
-        fprintf(fp_fiber, "%ld\n", fiber_nnz);
-#endif
       }
+    } /* for each tile */
+
+    printf("  empty: %"SPLATT_PF_IDX" (%0.1f%%)\n", empty,
+        100. * (double)empty/ (double)ct->ntiles);
+    if (opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
+      printf("  nslices: %"SPLATT_PF_IDX" nfibers: %"SPLATT_PF_IDX"\n", total_nslices, total_nfibers);
+
+      double avg_width = (float)total_width/total_nfibers;
+      printf("  avg_width = %f max_width = %d\n", avg_width, max_width);
+
+      double avg_slice_nnz = (double)ct->nnz/total_nslices;
+      double stddev_slice_nnz = sqrt(sq_sum_slice_nnz/total_nslices - avg_slice_nnz*avg_slice_nnz);
+
+      double avg_fiber_nnz = (double)ct->nnz/total_nfibers;
+      double stddev_fiber_nnz = sqrt(sq_sum_fiber_nnz/total_nfibers - avg_fiber_nnz*avg_fiber_nnz);
+
+      printf("  slice_nnz (min,max,avg,stddev): %ld %ld %f %f\n", min_slice_nnz, max_slice_nnz, avg_slice_nnz, stddev_slice_nnz);
+      printf("  fiber_nnz (min,max,avg,stddev): %ld %ld %f %f\n", min_fiber_nnz, max_fiber_nnz, avg_fiber_nnz, stddev_fiber_nnz);
     }
-
-    double avg_width = (float)total_width/nfibers;
-    printf("  avg_width = %f max_width = %d\n", avg_width, max_width);
-
-#ifdef SPLATT_WRITE_NNZ_HIST
-    fclose(fp_slice);
-    fclose(fp_fiber);
-#endif
-
-    double avg_slice_nnz = (double)ct->nnz/nslices;
-    double stddev_slice_nnz = sqrt(sq_sum_slice_nnz/nslices - avg_slice_nnz*avg_slice_nnz);
-
-    double avg_fiber_nnz = (double)ct->nnz/nfibers;
-    double stddev_fiber_nnz = sqrt(sq_sum_fiber_nnz/nfibers - avg_fiber_nnz*avg_fiber_nnz);
-
-    printf("  slice_nnz (min,max,avg,stddev): %ld %ld %f %f\n", min_slice_nnz, max_slice_nnz, avg_slice_nnz, stddev_slice_nnz);
-    printf("  fiber_nnz (min,max,avg,stddev): %ld %ld %f %f\n", min_fiber_nnz, max_fiber_nnz, avg_fiber_nnz, stddev_fiber_nnz);
   }
 }
 
