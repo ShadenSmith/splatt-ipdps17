@@ -11,7 +11,7 @@
 #include "util.h"
 
 #include "io.h"
-
+#include <omp.h>
 
 /******************************************************************************
  * API FUNCTIONS
@@ -500,46 +500,129 @@ static void p_mk_outerptr(
   /* the mode after accounting for dim_perm */
   fidx_t const * const restrict ttind = tt->ind[ct->dim_perm[0]] + nnzstart;
 
-  /* count fibers */
-  idx_t nfibs = 1;
-  for(idx_t x=1; x < nnz; ++x) {
-    assert(ttind[x-1] <= ttind[x]);
-    if(ttind[x] != ttind[x-1]) {
-      ++nfibs;
-    }
-  }
-  ct->pt[tile_id].nfibs[0] = nfibs;
-  assert(nfibs <= ct->dims[ct->dim_perm[0]]);
-
   /* grab sparsity pattern */
   csf_sparsity * const pt = ct->pt + tile_id;
 
-  pt->fptr[0] = splatt_malloc((nfibs+1) * sizeof(**(pt->fptr)));
-  if(ct->ntiles > 1) {
-    pt->fids[0] = splatt_malloc(nfibs * sizeof(**(pt->fids)));
-  } else {
-    pt->fids[0] = NULL;
-  }
-
-  idx_t  * const restrict fp = pt->fptr[0];
-  fidx_t  * const restrict fi = pt->fids[0];
-  fp[0] = 0;
-  if(fi != NULL) {
-    fi[0] = ttind[0];
-  }
-
-  idx_t nfound = 1;
-  for(idx_t n=1; n < nnz; ++n) {
-    /* check for end of outer index */
-    if(ttind[n] != ttind[n-1]) {
-      if(fi != NULL) {
-        fi[nfound] = ttind[n];
+  if(omp_in_parallel()) {
+    /* count fibers */
+    idx_t nfibs = 1;
+    for(idx_t x=1; x < nnz; ++x) {
+      assert(ttind[x-1] <= ttind[x]);
+      if(ttind[x] != ttind[x-1]) {
+        ++nfibs;
       }
-      fp[nfound++] = n;
     }
-  }
+    ct->pt[tile_id].nfibs[0] = nfibs;
+    assert(nfibs <= ct->dims[ct->dim_perm[0]]);
 
-  fp[nfibs] = nnz;
+    pt->fptr[0] = splatt_malloc((nfibs+1) * sizeof(**(pt->fptr)));
+    if(ct->ntiles > 1) {
+      pt->fids[0] = splatt_malloc(nfibs * sizeof(**(pt->fids)));
+    } else {
+      pt->fids[0] = NULL;
+    }
+
+    idx_t  * const restrict fp = pt->fptr[0];
+    fidx_t  * const restrict fi = pt->fids[0];
+    fp[0] = 0;
+    if(fi != NULL) {
+      fi[0] = ttind[0];
+    }
+
+    idx_t nfound = 1;
+    if(fi != NULL) {
+      for(idx_t n=1; n < nnz; ++n) {
+        /* check for end of outer index */
+        if(ttind[n] != ttind[n-1]) {
+          fi[nfound] = ttind[n];
+          fp[nfound++] = n;
+        }
+      }
+    }
+    else {
+      for(idx_t n=1; n < nnz; ++n) {
+        /* check for end of outer index */
+        if(ttind[n] != ttind[n-1]) {
+          fp[nfound++] = n;
+        }
+      }
+    }
+
+    fp[nfibs] = nnz;
+  } /* omp_in_parallel */
+  else {
+    idx_t nfibs[omp_get_max_threads() + 1];
+    nfibs[0] = 1;
+
+#pragma omp parallel
+    {
+      int nthreads = omp_get_num_threads();
+      int tid = omp_get_thread_num();
+
+      idx_t x_per_thread = (nnz + nthreads - 1)/nthreads;
+      idx_t x_begin = SS_MAX(SS_MIN(x_per_thread*tid, nnz), 1);
+      idx_t x_end = SS_MIN(x_begin + x_per_thread, nnz);
+
+      idx_t nfibs_private = 0;
+
+      for(idx_t x = x_begin; x < x_end; ++x) {
+        assert(ttind[x-1] <= ttind[x]);
+        if(ttind[x] != ttind[x-1]) {
+          ++nfibs_private;
+        }
+      }
+      nfibs[tid + 1] = nfibs_private;
+
+#pragma omp barrier
+#pragma omp master
+      {
+        /* prefix sum */
+        for(int t = 0; t < nthreads; ++t) {
+          nfibs[t + 1] += nfibs[t];
+        }
+        ct->pt[tile_id].nfibs[0] = nfibs[nthreads];
+        assert(nfibs[nthreads] <= ct->dims[ct->dim_perm[0]]);
+
+        pt->fptr[0] = splatt_malloc((nfibs[nthreads]+1) * sizeof(**(pt->fptr)));
+        if(ct->ntiles > 1) {
+          pt->fids[0] = splatt_malloc(nfibs[nthreads] * sizeof(**(pt->fids)));
+        } else {
+          pt->fids[0] = NULL;
+        }
+      }
+#pragma omp barrier
+
+      idx_t  * const restrict fp = pt->fptr[0];
+      fidx_t  * const restrict fi = pt->fids[0];
+#pragma omp master
+      {
+        fp[0] = 0;
+        if(fi != NULL) {
+          fi[0] = ttind[0];
+        }
+        fp[nfibs[nthreads]] = nnz;
+      }
+
+      idx_t nfound = nfibs[tid];
+      if(fi != NULL) {
+        for(idx_t n=x_begin; n < x_end; ++n) {
+          /* check for end of outer index */
+          if(ttind[n] != ttind[n-1]) {
+            fi[nfound] = ttind[n];
+            fp[nfound++] = n;
+          }
+        }
+      }
+      else {
+        for(idx_t n=x_begin; n < x_end; ++n) {
+          /* check for end of outer index */
+          if(ttind[n] != ttind[n-1]) {
+            fp[nfound++] = n;
+          }
+        }
+      }
+    } /* omp parallel */
+  } /* !omp_in_parallel */
 }
 
 
@@ -581,50 +664,129 @@ static void p_mk_fptr(
   /* we will edit this to point to the new fiber idxs instead of nnz */
   idx_t * const restrict fprev = pt->fptr[mode-1];
 
-  /* first count nfibers */
-  idx_t nfibs = 0;
-  /* foreach 'slice' in the previous dimension */
-  for(idx_t s=0; s < pt->nfibs[mode-1]; ++s) {
-    ++nfibs; /* one by default per 'slice' */
-    /* count fibers in current hyperplane*/
-    for(idx_t f=fprev[s]+1; f < fprev[s+1]; ++f) {
-      if(ttind[f] != ttind[f-1]) {
-        ++nfibs;
+  if(omp_in_parallel()) {
+    /* first count nfibers */
+    idx_t nfibs = 0;
+    /* foreach 'slice' in the previous dimension */
+    for(idx_t s=0; s < pt->nfibs[mode-1]; ++s) {
+      ++nfibs; /* one by default per 'slice' */
+      /* count fibers in current hyperplane*/
+      for(idx_t f=fprev[s]+1; f < fprev[s+1]; ++f) {
+        if(ttind[f] != ttind[f-1]) {
+          ++nfibs;
+        }
       }
     }
-  }
-  pt->nfibs[mode] = nfibs;
+    pt->nfibs[mode] = nfibs;
 
 
-  pt->fptr[mode] = splatt_malloc((nfibs+1) * sizeof(**(pt->fptr)));
-  pt->fids[mode] = splatt_malloc(nfibs * sizeof(**(pt->fids)));
-  idx_t * const restrict fp = pt->fptr[mode];
-  fidx_t * const restrict fi = pt->fids[mode];
-  fp[0] = 0;
+    pt->fptr[mode] = splatt_malloc((nfibs+1) * sizeof(**(pt->fptr)));
+    pt->fids[mode] = splatt_malloc(nfibs * sizeof(**(pt->fids)));
+    idx_t * const restrict fp = pt->fptr[mode];
+    fidx_t * const restrict fi = pt->fids[mode];
+    fp[0] = 0;
 
-  /* now fill in fiber info */
-  idx_t nfound = 0;
-  for(idx_t s=0; s < pt->nfibs[mode-1]; ++s) {
-    idx_t const start = fprev[s]+1;
-    idx_t const end = fprev[s+1];
+    /* now fill in fiber info */
+    idx_t nfound = 0;
+    for(idx_t s=0; s < pt->nfibs[mode-1]; ++s) {
+      idx_t const start = fprev[s]+1;
+      idx_t const end = fprev[s+1];
 
-    /* mark start of subtree */
-    fprev[s] = nfound;
-    fi[nfound] = ttind[start-1];
-    fp[nfound++] = start-1;
+      /* mark start of subtree */
+      fprev[s] = nfound;
+      fi[nfound] = ttind[start-1];
+      fp[nfound++] = start-1;
 
-    /* mark fibers in current hyperplane */
-    for(idx_t f=start; f < end; ++f) {
-      if(ttind[f] != ttind[f-1]) {
-        fi[nfound] = ttind[f];
-        fp[nfound++] = f;
+      /* mark fibers in current hyperplane */
+      for(idx_t f=start; f < end; ++f) {
+        if(ttind[f] != ttind[f-1]) {
+          fi[nfound] = ttind[f];
+          fp[nfound++] = f;
+        }
       }
     }
-  }
 
-  /* mark end of last hyperplane */
-  fprev[pt->nfibs[mode-1]] = nfibs;
-  fp[nfibs] = nnz;
+    /* mark end of last hyperplane */
+    fprev[pt->nfibs[mode-1]] = nfibs;
+    fp[nfibs] = nnz;
+  } /* omp_in_parallel */
+  else {
+    idx_t nfibs[omp_get_max_threads() + 1];
+    nfibs[0] = 0;
+
+#pragma omp parallel
+    {
+      int nthreads = omp_get_num_threads();
+      int tid = omp_get_thread_num();
+
+      idx_t s_per_thread = (pt->nfibs[mode-1] + nthreads - 1)/nthreads;
+      idx_t s_begin = SS_MIN(s_per_thread*tid, pt->nfibs[mode-1]);
+      idx_t s_end = SS_MIN(s_begin + s_per_thread, pt->nfibs[mode-1]);
+
+      /* first count nfibers */
+      idx_t nfibs_private = 0;
+      /* foreach 'slice' in the previous dimension */
+      for(idx_t s=s_begin; s < s_end; ++s) {
+        ++nfibs_private; /* one by default per 'slice' */
+        /* count fibers in current hyperplane*/
+        for(idx_t f=fprev[s]+1; f < fprev[s+1]; ++f) {
+          if(ttind[f] != ttind[f-1]) {
+            ++nfibs_private;
+          }
+        }
+      }
+      nfibs[tid + 1] = nfibs_private;
+      idx_t fprev_end = fprev[s_end];
+
+#pragma omp barrier
+#pragma omp master
+      {
+        /* prefix sum */
+        for(int t = 0; t < nthreads; ++t) {
+          nfibs[t + 1] += nfibs[t];
+        }
+        pt->nfibs[mode] = nfibs[nthreads];
+
+        pt->fptr[mode] = splatt_malloc((nfibs[nthreads]+1) * sizeof(**(pt->fptr)));
+        pt->fids[mode] = splatt_malloc(nfibs[nthreads] * sizeof(**(pt->fids)));
+      }
+#pragma omp barrier
+
+      idx_t * const restrict fp = pt->fptr[mode];
+      fidx_t * const restrict fi = pt->fids[mode];
+
+#pragma omp master
+      {
+        fp[0] = 0;
+      }
+
+      /* now fill in fiber info */
+      idx_t nfound = nfibs[tid];
+      for(idx_t s=s_begin; s < s_end; ++s) {
+        idx_t const start = fprev[s]+1;
+        idx_t const end = s == s_end - 1 ? fprev_end : fprev[s+1];
+
+        /* mark start of subtree */
+        fprev[s] = nfound;
+        fi[nfound] = ttind[start-1];
+        fp[nfound++] = start-1;
+
+        /* mark fibers in current hyperplane */
+        for(idx_t f=start; f < end; ++f) {
+          if(ttind[f] != ttind[f-1]) {
+            fi[nfound] = ttind[f];
+            fp[nfound++] = f;
+          }
+        }
+      }
+
+      if(tid == nthreads - 1) {
+        /* mark end of last hyperplane */
+        fprev[pt->nfibs[mode-1]] = nfibs[nthreads];
+        fp[nfibs[nthreads]] = nnz;
+      }
+    } /* omp parallel */
+  } /* !omp_in_parallel */
 }
 
 /**
@@ -705,6 +867,7 @@ static void p_csf_alloc_densetile(
   ct->ntiles = ntiles;
   ct->pt = splatt_malloc(ntiles * sizeof(*(ct->pt)));
 
+#pragma omp parallel for if (ntiles > 1) schedule(dynamic, 1)
   for(idx_t t=0; t < ntiles; ++t) {
     idx_t const startnnz = nnz_ptr[t];
     idx_t const endnnz   = nnz_ptr[t+1];
@@ -725,24 +888,36 @@ static void p_csf_alloc_densetile(
       pt->fptr[0][0] = 0;
       pt->fptr[0][1] = 0;
       pt->vals = NULL;
-      continue;
     }
+    else {
+      /* last row of fptr is just nonzero inds */
+      pt->nfibs[nmodes-1] = ptnnz;
 
-    /* last row of fptr is just nonzero inds */
-    pt->nfibs[nmodes-1] = ptnnz;
-
-    pt->fids[nmodes-1] = splatt_malloc(ptnnz * sizeof(**(pt->fids)));
+      pt->fids[nmodes-1] = splatt_malloc(ptnnz * sizeof(**(pt->fids)));
+      if (omp_in_parallel()) {
+        for (idx_t i = 0; i < ptnnz; ++i) {
+          pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][startnnz + i];
+        }
+      }
+      else {
 #pragma omp parallel for
-    for (idx_t i = 0; i < ptnnz; ++i) {
-      pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][startnnz + i];
-    }
+        for (idx_t i = 0; i < ptnnz; ++i) {
+          pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][startnnz + i];
+        }
+      }
 
-    pt->vals = splatt_malloc(ptnnz * sizeof(*(pt->vals)));
-    par_memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
+      pt->vals = splatt_malloc(ptnnz * sizeof(*(pt->vals)));
+      if (omp_in_parallel()) {
+        memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
+      }
+      else {
+        par_memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
+      }
 
-    /* create fptr entries for the rest of the modes */
-    for(idx_t m=0; m < tt->nmodes-1; ++m) {
-      p_mk_fptr(ct, tt, t, nnz_ptr, m);
+      /* create fptr entries for the rest of the modes */
+      for(idx_t m=0; m < tt->nmodes-1; ++m) {
+        p_mk_fptr(ct, tt, t, nnz_ptr, m);
+      }
     }
   }
 
