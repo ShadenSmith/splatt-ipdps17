@@ -1063,7 +1063,7 @@ void radix_sort(sptensor_t * const tt, idx_t *cmplt)
  * counting sort on the msb and comparison-based sort for
  * the remaining
  */
-void counting_sort_hybrid(sptensor_t * const tt, idx_t *cmplt)
+static void p_counting_sort_hybrid3(sptensor_t * const tt, idx_t *cmplt)
 {
   idx_t m = cmplt[0];
   idx_t nslices = tt->dims[m];
@@ -1233,6 +1233,7 @@ void counting_sort_hybrid(sptensor_t * const tt, idx_t *cmplt)
 }
 
 
+
 /**
 * @brief Perform quicksort on a n-mode tensor between start and end.
 *
@@ -1310,6 +1311,149 @@ static void p_tt_quicksort(
   }
 }
 
+/**
+ * counting sort on the msb and comparison-based sort for
+ * the remaining
+ */
+static void p_counting_sort_hybrid(sptensor_t * const tt, idx_t *cmplt)
+{
+  idx_t m = cmplt[0];
+  idx_t nslices = tt->dims[m];
+
+  fidx_t **new_ind = splatt_malloc(tt->nmodes*sizeof(fidx_t *));
+  for(idx_t i = 0; i < tt->nmodes; ++i) {
+#ifdef HBW_ALLOC
+    if(i != m) hbw_posix_memalign((void **)&new_ind[i], 4096, tt->nnz*sizeof(fidx_t));
+#else
+    if(i != m) new_ind[i] = splatt_malloc(tt->nnz*sizeof(fidx_t));
+#endif
+  }
+
+  val_t *new_vals;
+  idx_t *histogram_array;
+#ifdef HBW_ALLOC
+  hbw_posix_memalign((void **)&new_vals, 4096, tt->nnz*sizeof(val_t));
+  hbw_posix_memalign((void **)&histogram_array, 4096, (nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
+#else
+  new_vals = splatt_malloc(tt->nnz*sizeof(val_t));
+  histogram_array = splatt_malloc((nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
+#endif
+
+#pragma omp parallel
+  {
+    double t = omp_get_wtime();
+
+    int nthreads = omp_get_num_threads();
+    int tid = omp_get_thread_num();
+
+    idx_t *histogram = histogram_array + nslices*tid;
+    memset(histogram, 0, nslices * sizeof(idx_t));
+
+    idx_t j_per_thread = (tt->nnz + nthreads - 1)/nthreads;
+    idx_t jbegin = SS_MIN(j_per_thread*tid, tt->nnz);
+    idx_t jend = SS_MIN(jbegin + j_per_thread, tt->nnz);
+
+    /* count */
+    for (idx_t j = jbegin; j < jend; ++j) {
+      idx_t idx = tt->ind[m][j];
+      ++histogram[idx];
+    }
+
+#pragma omp barrier
+
+    /* prefix sum */
+    for (idx_t j = tid*nslices + 1; j < (tid + 1)*nslices; ++j) {
+      idx_t transpose_j = transpose_idx(j, nthreads, nslices);
+      idx_t transpose_j_minus_1 = transpose_idx(j - 1, nthreads, nslices);
+      
+      histogram_array[transpose_j] += histogram_array[transpose_j_minus_1];
+    }
+
+#pragma omp barrier
+#pragma omp master
+    {
+      //printf("\tgather takes %f\n", omp_get_wtime() - t);
+      t = omp_get_wtime();
+
+      for (idx_t t = 1; t < nthreads; ++t) {
+        idx_t j0 = nslices*t - 1, j1 = nslices*(t + 1) - 1;
+        idx_t transpose_j0 = transpose_idx(j0, nthreads, nslices);
+        idx_t transpose_j1 = transpose_idx(j1, nthreads, nslices);
+
+        histogram_array[transpose_j1] += histogram_array[transpose_j0];
+      }
+    }
+#pragma omp barrier
+
+    if (tid > 0) {
+      idx_t transpose_j0 = transpose_idx(nslices*tid - 1, nthreads, nslices);
+
+      for (idx_t j = tid*nslices; j < (tid + 1)*nslices - 1; ++j) {
+        idx_t transpose_j = transpose_idx(j, nthreads, nslices);
+
+        histogram_array[transpose_j] += histogram_array[transpose_j0];
+      }
+    }
+
+#pragma omp barrier
+
+    /* scatter */
+    for(idx_t j = jend - 1; ; --j) {
+      idx_t idx = tt->ind[m][j];
+      --histogram[idx];
+
+      idx_t offset = histogram[idx];
+
+      new_vals[offset] = tt->vals[j];
+      for(int k = 0; k < tt->nmodes; ++k) {
+        if(k != m) new_ind[k][offset] = tt->ind[k][j];
+      }
+
+      if (j == jbegin) break;
+    }
+
+    if (0 == tid) {
+      //printf("\tscatter takes %f\n", omp_get_wtime() - t);
+    }
+  } /* omp parallel */
+
+  double t = omp_get_wtime();
+
+  for(idx_t i = 0; i < tt->nmodes; ++i) {
+    if(i != m) {
+#ifdef HBW_ALLOC
+      hbw_free(tt->ind[i]);
+#else
+      splatt_free(tt->ind[i]);
+#endif
+      tt->ind[i] = new_ind[i];
+    }
+  }
+  splatt_free(new_ind);
+#ifdef HBW_ALLOC
+  hbw_free(tt->vals);
+#else
+  splatt_free(tt->vals);
+#endif
+  tt->vals = new_vals;
+
+  histogram_array[nslices] = tt->nnz;
+#pragma omp parallel for schedule(dynamic)
+  for(idx_t i = 0; i < nslices; ++i) {
+    for(idx_t j = histogram_array[i]; j < histogram_array[i + 1]; ++j) {
+      tt->ind[m][j] = i;
+    }
+    p_tt_quicksort(tt, cmplt + 1, histogram_array[i], histogram_array[i + 1]);
+  }
+
+#ifdef HBW_ALLOC
+  hbw_free(histogram_array);
+#else
+  splatt_free(histogram_array);
+#endif
+
+  //printf("\tqsort takes %f\n", omp_get_wtime() - t);
+}
 
 
 /******************************************************************************
@@ -1347,12 +1491,11 @@ void tt_sort_range(
   timer_start(&timers[TIMER_SORT]);
   switch(tt->type) {
   case SPLATT_NMODE:
-    p_tt_quicksort(tt, cmplt, start, end);
+    //p_tt_quicksort(tt, cmplt, start, end);
+    p_counting_sort_hybrid(tt, cmplt);
     break;
   case SPLATT_3MODE:
-    t = omp_get_wtime();
-    counting_sort_hybrid(tt, cmplt);
-    //printf("counting sort takes %f\n", omp_get_wtime() - t);
+    p_counting_sort_hybrid3(tt, cmplt);
     break;
   }
 
