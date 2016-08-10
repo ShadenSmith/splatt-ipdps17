@@ -9,6 +9,7 @@
 #include "util.h"
 #include <limits.h>
 #include <omp.h>
+#include <algorithm>
 #ifdef __INTEL_COMPILER
 #include <immintrin.h>
 #define SPLATT_INTRINSIC // use intrinsic
@@ -178,7 +179,7 @@ static inline void p_csf_process_fiber_lock(
   idx_t const nfactors,
   idx_t const start,
   idx_t const end,
-  idx_t const * const restrict inds,
+  fidx_t const * const restrict inds,
   val_t const * const restrict vals)
 {
   for(idx_t jj=start; jj < end; ++jj) {
@@ -198,7 +199,7 @@ static inline void p_csf_process_fiber_nolock(
   idx_t const nfactors,
   idx_t const start,
   idx_t const end,
-  idx_t const * const restrict inds,
+  fidx_t const * const restrict inds,
   val_t const * const restrict vals)
 {
   for(idx_t jj=start; jj < end; ++jj) {
@@ -217,7 +218,7 @@ static inline void p_csf_process_fiber(
   val_t const * const leafmat,
   idx_t const start,
   idx_t const end,
-  idx_t const * const inds,
+  fidx_t const * const inds,
   val_t const * const vals)
 {
   /* foreach nnz in fiber */
@@ -238,7 +239,7 @@ static inline void p_propagate_up(
   idx_t const init_depth,
   idx_t const init_idx,
   idx_t const * const * const fp,
-  idx_t const * const * const fids,
+  fidx_t const * const * const fids,
   val_t const * const restrict vals,
   val_t ** mvals,
   idx_t const nmodes,
@@ -295,70 +296,6 @@ static inline void p_propagate_up(
     out[f] = buf[init_depth+1][f];
   }
 }
-
-
-static void p_csf_mttkrp_root_tiled3(
-  splatt_csf const * const ct,
-  idx_t const tile_id,
-  matrix_t ** mats,
-  thd_info * const thds)
-{
-  assert(ct->nmodes == 3);
-  val_t const * const vals = ct->pt[tile_id].vals;
-
-  idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
-  idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
-
-  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
-  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
-  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
-
-  val_t const * const avals = mats[ct->dim_perm[1]]->vals;
-  val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
-  val_t * const ovals = mats[MAX_NMODES]->vals;
-  idx_t const nfactors = mats[MAX_NMODES]->J;
-
-  val_t * const restrict accumF
-      = (val_t *) thds[omp_get_thread_num()].scratch[0];
-
-  idx_t const nslices = ct->pt[tile_id].nfibs[0];
-  for(idx_t s=0; s < nslices; ++s) {
-    idx_t const fid = (sids == NULL) ? s : sids[s];
-
-    val_t * const restrict mv = ovals + (fid * nfactors);
-
-    /* foreach fiber in slice */
-    for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
-      /* first entry of the fiber is used to initialize accumF */
-      idx_t const jjfirst  = fptr[f];
-      val_t const vfirst   = vals[jjfirst];
-      val_t const * const restrict bv = bvals + (inds[jjfirst] * nfactors);
-      for(idx_t r=0; r < nfactors; ++r) {
-        accumF[r] = vfirst * bv[r];
-      }
-
-      /* foreach nnz in fiber */
-      for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
-        val_t const v = vals[jj];
-        val_t const * const restrict bv = bvals + (inds[jj] * nfactors);
-        for(idx_t r=0; r < nfactors; ++r) {
-          accumF[r] += v * bv[r];
-        }
-      }
-
-      /* scale inner products by row of A and update to M */
-      val_t const * const restrict av = avals  + (fids[f] * nfactors);
-      for(idx_t r=0; r < nfactors; ++r) {
-        mv[r] += accumF[r] * av[r];
-      }
-    }
-  }
-}
-
-//#define SPLATT_MEASURE_LOAD_BALANCE
-#ifdef SPLATT_MEASURE_LOAD_BALANCE
-double barrierTimes[1024];
-#endif
 
 template<int NFACTORS, bool TILED = false>
 static void p_csf_mttkrp_root3_kernel_(
@@ -514,6 +451,87 @@ static void p_csf_mttkrp_root3_kernel_(
 #endif
 }
 
+static void p_csf_mttkrp_root_tiled3(
+  splatt_csf const * const ct,
+  idx_t const tile_id,
+  matrix_t ** mats,
+  thd_info * const thds)
+{
+  assert(ct->nmodes == 3);
+  val_t const * const vals = ct->pt[tile_id].vals;
+
+  idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
+  idx_t const * const restrict fptr = ct->pt[tile_id].fptr[1];
+
+  fidx_t const * const restrict sids = ct->pt[tile_id].fids[0];
+  fidx_t const * const restrict fids = ct->pt[tile_id].fids[1];
+  fidx_t const * const restrict inds = ct->pt[tile_id].fids[2];
+
+  val_t const * const avals = mats[ct->dim_perm[1]]->vals;
+  val_t const * const bvals = mats[ct->dim_perm[2]]->vals;
+  val_t * const ovals = mats[MAX_NMODES]->vals;
+  idx_t const nfactors = mats[MAX_NMODES]->J;
+
+  int tid = omp_get_thread_num();
+
+  val_t * const restrict accumF = (val_t *) thds[tid].scratch[0];
+  val_t * const restrict accumO = (val_t *) thds[tid].scratch[2];
+
+  idx_t const nslices = ct->pt[tile_id].nfibs[0];
+
+#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
+  if (nfactors == 16) {
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
+
+      val_t * const restrict mv = ovals + (fid * nfactors);
+
+      p_csf_mttkrp_root3_kernel_<16, true>(
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, accumF, accumO, s);
+    }
+  }
+  else
+#endif
+  {
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
+
+      val_t * const restrict mv = ovals + (fid * nfactors);
+
+      /* foreach fiber in slice */
+      for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
+        /* first entry of the fiber is used to initialize accumF */
+        idx_t const jjfirst  = fptr[f];
+        val_t const vfirst   = vals[jjfirst];
+        val_t const * const restrict bv = bvals + (inds[jjfirst] * nfactors);
+        for(idx_t r=0; r < nfactors; ++r) {
+          accumF[r] = vfirst * bv[r];
+        }
+
+        /* foreach nnz in fiber */
+        for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
+          val_t const v = vals[jj];
+          val_t const * const restrict bv = bvals + (inds[jj] * nfactors);
+          for(idx_t r=0; r < nfactors; ++r) {
+            accumF[r] += v * bv[r];
+          }
+        }
+
+        /* scale inner products by row of A and update to M */
+        val_t const * const restrict av = avals  + (fids[f] * nfactors);
+        for(idx_t r=0; r < nfactors; ++r) {
+          mv[r] += accumF[r] * av[r];
+        }
+      }
+    }
+  }
+}
+
+//#define SPLATT_MEASURE_LOAD_BALANCE
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+double barrierTimes[1024];
+#endif
+
 template<int NFACTORS>
 static void p_csf_mttkrp_root3_(
   splatt_csf const * const ct,
@@ -601,8 +619,14 @@ static void p_csf_mttkrp_root3_(
     }
   }
   else {
-    #pragma omp for schedule(dynamic, 16) nowait
-    for(idx_t s=0; s < nslices; ++s) {
+    idx_t const nrows = mats[MAX_NMODES]->I;
+    idx_t rows_per_thread = (nrows + nthreads - 1)/nthreads;
+    idx_t row_begin = SS_MIN(rows_per_thread*tid, nrows);
+    idx_t row_end = SS_MIN(row_begin + rows_per_thread, nrows);
+
+    idx_t sbegin = std::lower_bound(sids, sids + nslices, row_begin) - sids;
+
+    for(idx_t s=sbegin; s < nslices && sids[s] < row_end; ++s) {
       idx_t fid = sids[s];
       val_t *mv = ovals + (fid * NFACTORS);
       p_csf_mttkrp_root3_kernel_<NFACTORS, true>(
@@ -756,7 +780,7 @@ static void p_csf_mttkrp_internal3_kernel_(
     }
 
     /* scale inner products by row of A and update to M */
-    idx_t oid = fids[f];
+    fidx_t oid = fids[f];
     val_t * const restrict ov = ovals  + (oid * NFACTORS);
     if (TILED) {
 #ifdef __AVX512F__
@@ -1561,8 +1585,8 @@ static void p_csf_mttkrp_root_tiled(
 
   idx_t const * const * const restrict fp
       = (idx_t const * const *) ct->pt[tile_id].fptr;
-  idx_t const * const * const restrict fids
-      = (idx_t const * const *) ct->pt[tile_id].fids;
+  fidx_t const * const * const restrict fids
+      = (fidx_t const * const *) ct->pt[tile_id].fids;
   idx_t const nfactors = mats[0]->J;
 
   val_t * mvals[MAX_NMODES];
@@ -1583,7 +1607,7 @@ static void p_csf_mttkrp_root_tiled(
   assert(nfibs <= mats[MAX_NMODES]->I);
 
   for(idx_t s=0; s < nfibs; ++s) {
-    idx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
 
     assert(fid < mats[MAX_NMODES]->I);
 
@@ -1622,8 +1646,8 @@ static void p_csf_mttkrp_root(
 
   idx_t const * const * const restrict fp
       = (idx_t const * const *) ct->pt[tile_id].fptr;
-  idx_t const * const * const restrict fids
-      = (idx_t const * const *) ct->pt[tile_id].fids;
+  fidx_t const * const * const restrict fids
+      = (fidx_t const * const *) ct->pt[tile_id].fids;
   idx_t const nfactors = mats[0]->J;
 
   val_t * mvals[MAX_NMODES];
@@ -1645,7 +1669,7 @@ static void p_csf_mttkrp_root(
 
   #pragma omp for schedule(dynamic, 16) nowait
   for(idx_t s=0; s < nfibs; ++s) {
-    idx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
 
     assert(fid < mats[MAX_NMODES]->I);
 
@@ -1752,8 +1776,8 @@ static void p_csf_mttkrp_leaf_tiled(
   /* extract tensor structures */
   idx_t const * const * const restrict fp
       = (idx_t const * const *) ct->pt[tile_id].fptr;
-  idx_t const * const * const restrict fids
-      = (idx_t const * const *) ct->pt[tile_id].fids;
+  fidx_t const * const * const restrict fids
+      = (fidx_t const * const *) ct->pt[tile_id].fids;
 
   idx_t const nfactors = mats[0]->J;
 
@@ -1771,7 +1795,7 @@ static void p_csf_mttkrp_leaf_tiled(
   /* foreach outer slice */
   idx_t const nouter = ct->pt[tile_id].nfibs[0];
   for(idx_t s=0; s < nouter; ++s) {
-    idx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
     idxstack[0] = s;
 
     /* clear out stale data */
@@ -1834,8 +1858,8 @@ static void p_csf_mttkrp_leaf(
 
   idx_t const * const * const restrict fp
       = (idx_t const * const *) ct->pt[tile_id].fptr;
-  idx_t const * const * const restrict fids
-      = (idx_t const * const *) ct->pt[tile_id].fids;
+  fidx_t const * const * const restrict fids
+      = (fidx_t const * const *) ct->pt[tile_id].fids;
 
   idx_t const nfactors = mats[0]->J;
 
@@ -1854,7 +1878,7 @@ static void p_csf_mttkrp_leaf(
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
   #pragma omp for schedule(dynamic, 16) nowait
   for(idx_t s=0; s < nslices; ++s) {
-    idx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
     idxstack[0] = s;
 
     /* clear out stale data */
@@ -1995,8 +2019,8 @@ static void p_csf_mttkrp_internal_tiled(
 
   idx_t const * const * const restrict fp
       = (idx_t const * const *) ct->pt[tile_id].fptr;
-  idx_t const * const * const restrict fids
-      = (idx_t const * const *) ct->pt[tile_id].fids;
+  fidx_t const * const * const restrict fids
+      = (fidx_t const * const *) ct->pt[tile_id].fids;
 
   idx_t const nfactors = mats[0]->J;
 
@@ -2019,7 +2043,7 @@ static void p_csf_mttkrp_internal_tiled(
   /* foreach outer slice */
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
   for(idx_t s=0; s < nslices; ++s) {
-    idx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
 
     /* push outer slice and fill stack */
     idxstack[0] = s;
@@ -2044,7 +2068,7 @@ static void p_csf_mttkrp_internal_tiled(
       }
 
       /* write to output and clear buf[outdepth] for next subtree */
-      idx_t const noderow = fids[outdepth][idxstack[outdepth]];
+      fidx_t const noderow = fids[outdepth][idxstack[outdepth]];
 
       /* propagate value up to buf[outdepth] */
       p_propagate_up(buf[outdepth], buf, idxstack, outdepth,idxstack[outdepth],
@@ -2084,8 +2108,8 @@ static void p_csf_mttkrp_internal(
 
   idx_t const * const * const restrict fp
       = (idx_t const * const *) ct->pt[tile_id].fptr;
-  idx_t const * const * const restrict fids
-      = (idx_t const * const *) ct->pt[tile_id].fids;
+  fidx_t const * const * const restrict fids
+      = (fidx_t const * const *) ct->pt[tile_id].fids;
   idx_t const nfactors = mats[0]->J;
 
   /* find out which level in the tree this is */
@@ -2108,7 +2132,7 @@ static void p_csf_mttkrp_internal(
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
   #pragma omp for schedule(dynamic, 16) nowait
   for(idx_t s=0; s < nslices; ++s) {
-    idx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
 
     /* push outer slice and fill stack */
     idxstack[0] = s;
@@ -2133,7 +2157,7 @@ static void p_csf_mttkrp_internal(
       }
 
       /* write to output and clear buf[outdepth] for next subtree */
-      idx_t const noderow = fids[outdepth][idxstack[outdepth]];
+      fidx_t const noderow = fids[outdepth][idxstack[outdepth]];
 
       /* propagate value up to buf[outdepth] */
       p_propagate_up(buf[outdepth], buf, idxstack, outdepth,idxstack[outdepth],
