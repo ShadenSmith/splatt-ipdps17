@@ -7,6 +7,7 @@
 #include "base.h"
 #include "util.h"
 
+#include "mkl.h"
 
 /******************************************************************************
  * PUBLIC FUNCTIONS
@@ -29,12 +30,34 @@ idx_t rand_idx(void)
 }
 
 
+static int vsl_stream_initialized[4096];
+static VSLStreamStatePtr vsl_streams[4096];
+
 void fill_rand(
   val_t * const restrict vals,
   idx_t const nelems)
 {
-  for(idx_t i=0; i < nelems; ++i) {
-    vals[i] = rand_val();
+#pragma omp parallel
+  {
+    int nthreads = omp_get_num_threads();
+    int tid = omp_get_thread_num();
+
+    idx_t i_per_thread = (nelems + nthreads - 1)/nthreads;
+    idx_t i_begin = SS_MIN(i_per_thread*tid, nelems);
+    idx_t i_end = SS_MIN(i_begin + i_per_thread, nelems);
+
+    if (!vsl_stream_initialized[tid]) {
+      vslNewStream(&vsl_streams[tid], VSL_BRNG_SFMT19937, 0);
+      vsl_stream_initialized[tid] = 1;
+    }
+
+    vslSkipAheadStream(vsl_streams[tid], i_begin);
+
+    vdRngUniform(
+      VSL_RNG_METHOD_UNIFORM_STD, vsl_streams[tid],
+      i_end - i_begin, vals + i_begin, -3, 3);
+
+    vslSkipAheadStream(vsl_streams[tid], nelems - i_end);
   }
 }
 
