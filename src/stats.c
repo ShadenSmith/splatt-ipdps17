@@ -235,14 +235,14 @@ void stats_csf(
         ++empty;
       }
 
-      idx_t const * const restrict sptr = ct->pt[t].fptr[0];
-      idx_t const * const restrict fptr = ct->pt[t].fptr[1];
+      idx_t const * const restrict sptr = ct->pt[t].fptr[ct->nmodes - 3];
+      idx_t const * const restrict fptr = ct->pt[t].fptr[ct->nmodes - 2];
 
-      fidx_t const * const restrict sids = ct->pt[t].fids[0];
-      fidx_t const * const restrict fids = ct->pt[t].fids[1];
-      fidx_t const * const restrict inds = ct->pt[t].fids[2];
+      fidx_t const * const restrict sids = ct->pt[t].fids[ct->nmodes - 3];
+      fidx_t const * const restrict fids = ct->pt[t].fids[ct->nmodes - 2];
+      fidx_t const * const restrict inds = ct->pt[t].fids[ct->nmodes - 1];
 
-      idx_t const nslices = ct->pt[t].nfibs[0];
+      idx_t const nslices = ct->pt[t].nfibs[ct->nmodes - 3];
       total_nslices += nslices;
 
       idx_t nfibers = sptr[nslices];
