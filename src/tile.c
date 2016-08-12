@@ -302,7 +302,7 @@ idx_t * tt_densetile(
     idx_t xend = SS_MIN(xbegin + x_per_thread, tt->nnz);
 
     idx_t coord[MAX_NMODES];
-  /* count tile sizes (in nnz) */
+    /* count tile sizes (in nnz) */
     for(idx_t x=xbegin; x < xend; ++x) {
       for(idx_t m=0; m < nmodes; ++m) {
         /* capping at dims-1 fixes overflow when dims don't divide evenly */
@@ -345,7 +345,7 @@ idx_t * tt_densetile(
         idx_t transpose_j = transpose_idx(j, nthreads, ntiles);
 
         tcounts[transpose_j] += tcounts[transpose_j0];
-        assert(tcounts[transpose_j] < tt->nnz);
+        assert(tcounts[transpose_j] <= tt->nnz);
       }
     }
 #pragma omp barrier
