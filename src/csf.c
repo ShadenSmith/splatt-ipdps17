@@ -476,6 +476,37 @@ static void p_print_csf(
 }
 
 
+static void p_set_nfibs_root(
+  splatt_csf * const ct,
+  sptensor_t const * const tt,
+  idx_t const tile_id,
+  idx_t const * const nnztile_ptr)
+{
+  idx_t const nnzstart = nnztile_ptr[tile_id];
+  idx_t const nnzend   = nnztile_ptr[tile_id+1];
+  idx_t const nnz = nnzend - nnzstart;
+
+  assert(nnzstart < nnzend);
+
+  /* the mode after accounting for dim_perm */
+  fidx_t const * const restrict ttind = tt->ind[ct->dim_perm[0]] + nnzstart;
+
+  /* grab sparsity pattern */
+  csf_sparsity * const pt = ct->pt + tile_id;
+
+  /* count fibers */
+  idx_t nfibs = 1;
+  for(idx_t x=1; x < nnz; ++x) {
+    assert(ttind[x-1] <= ttind[x]);
+    if(ttind[x] != ttind[x-1]) {
+      ++nfibs;
+    }
+  }
+  ct->pt[tile_id].nfibs[0] = nfibs;
+  assert(nfibs <= ct->dims[ct->dim_perm[0]]);
+}
+
+
 /**
 * @brief Construct the sparsity structure of the outer-mode of a CSF tensor.
 *
@@ -504,23 +535,8 @@ static void p_mk_outerptr(
   csf_sparsity * const pt = ct->pt + tile_id;
 
   if(omp_in_parallel()) {
-    /* count fibers */
-    idx_t nfibs = 1;
-    for(idx_t x=1; x < nnz; ++x) {
-      assert(ttind[x-1] <= ttind[x]);
-      if(ttind[x] != ttind[x-1]) {
-        ++nfibs;
-      }
-    }
-    ct->pt[tile_id].nfibs[0] = nfibs;
-    assert(nfibs <= ct->dims[ct->dim_perm[0]]);
-
-    pt->fptr[0] = splatt_malloc((nfibs+1) * sizeof(**(pt->fptr)));
-    if(ct->ntiles > 1) {
-      pt->fids[0] = splatt_malloc(nfibs * sizeof(**(pt->fids)));
-    } else {
-      pt->fids[0] = NULL;
-    }
+    /* nfibs already counted in p_set_nfibs_root */
+    idx_t nfibs = ct->pt[tile_id].nfibs[0];
 
     idx_t  * const restrict fp = pt->fptr[0];
     fidx_t  * const restrict fi = pt->fids[0];
@@ -626,6 +642,49 @@ static void p_mk_outerptr(
 }
 
 
+static void p_set_nfibs(
+  splatt_csf * const ct,
+  sptensor_t const * const tt,
+  idx_t const tile_id,
+  idx_t const * const nnztile_ptr,
+  idx_t const mode)
+{
+  assert(mode < ct->nmodes);
+
+  idx_t const nnzstart = nnztile_ptr[tile_id];
+  idx_t const nnzend   = nnztile_ptr[tile_id+1];
+  idx_t const nnz = nnzend - nnzstart;
+
+  /* outer mode is easy; just look at outer indices */
+  if(mode == 0) {
+    p_set_nfibs_root(ct, tt, tile_id, nnztile_ptr);
+    return;
+  }
+  /* the mode after accounting for dim_perm */
+  fidx_t const * const restrict ttind = tt->ind[ct->dim_perm[mode]] + nnzstart;
+
+  csf_sparsity * const pt = ct->pt + tile_id;
+
+  /* we will edit this to point to the new fiber idxs instead of nnz */
+  idx_t * const restrict fprev = pt->fptr[mode-1];
+
+  /* first count nfibers */
+  double t = omp_get_wtime();
+  idx_t nfibs = 0;
+  /* foreach 'slice' in the previous dimension */
+  for(idx_t s=0; s < pt->nfibs[mode-1]; ++s) {
+    ++nfibs; /* one by default per 'slice' */
+    /* count fibers in current hyperplane*/
+    for(idx_t f=fprev[s]+1; f < fprev[s+1]; ++f) {
+      if(ttind[f] != ttind[f-1]) {
+        ++nfibs;
+      }
+    }
+  }
+  pt->nfibs[mode] = nfibs;
+}
+
+
 /**
 * @brief Construct the sparsity structure of any mode but the last. The first
 *        (root) mode is handled by p_mk_outerptr and the first is simply a copy
@@ -665,23 +724,10 @@ static void p_mk_fptr(
   idx_t * const restrict fprev = pt->fptr[mode-1];
 
   if(omp_in_parallel()) {
-    /* first count nfibers */
-    idx_t nfibs = 0;
-    /* foreach 'slice' in the previous dimension */
-    for(idx_t s=0; s < pt->nfibs[mode-1]; ++s) {
-      ++nfibs; /* one by default per 'slice' */
-      /* count fibers in current hyperplane*/
-      for(idx_t f=fprev[s]+1; f < fprev[s+1]; ++f) {
-        if(ttind[f] != ttind[f-1]) {
-          ++nfibs;
-        }
-      }
-    }
-    pt->nfibs[mode] = nfibs;
+    /* nfibers already counted in p_set_nfibs */
+    idx_t nfibs = pt->nfibs[mode];
 
 
-    pt->fptr[mode] = splatt_malloc((nfibs+1) * sizeof(**(pt->fptr)));
-    pt->fids[mode] = splatt_malloc(nfibs * sizeof(**(pt->fids)));
     idx_t * const restrict fp = pt->fptr[mode];
     fidx_t * const restrict fi = pt->fids[mode];
     fp[0] = 0;
@@ -867,59 +913,107 @@ static void p_csf_alloc_densetile(
   ct->ntiles = ntiles;
   ct->pt = splatt_malloc(ntiles * sizeof(*(ct->pt)));
 
+  ct->pt[0].fids[nmodes - 1] = splatt_malloc(ct->nnz * sizeof(**(ct->pt[0].fids)));
+  ct->pt[0].vals = splatt_malloc(ct->nnz * sizeof(*(ct->pt[0].vals)));
+
+  for(idx_t m=0; m < nmodes-1; ++m) {
 #pragma omp parallel for if (ntiles > 1) schedule(dynamic, 1)
-  for(idx_t t=0; t < ntiles; ++t) {
-    idx_t const startnnz = nnz_ptr[t];
-    idx_t const endnnz   = nnz_ptr[t+1];
-    assert(endnnz >= startnnz);
-    idx_t const ptnnz = endnnz - startnnz;
+    for(idx_t t=0; t < ntiles; ++t) {
+      idx_t const startnnz = nnz_ptr[t];
+      idx_t const endnnz   = nnz_ptr[t+1];
+      assert(endnnz >= startnnz);
+      idx_t const ptnnz = endnnz - startnnz;
 
-    csf_sparsity * const pt = ct->pt + t;
+      csf_sparsity * const pt = ct->pt + t;
 
-    /* empty tile */
-    if(ptnnz == 0) {
-      for(idx_t m=0; m < ct->nmodes; ++m) {
-        pt->fptr[m] = NULL;
-        pt->fids[m] = NULL;
-        pt->nfibs[m] = 0;
-      }
-      /* first fptr may be accessed anyway */
-      pt->fptr[0] = (idx_t *) splatt_malloc(2 * sizeof(**(pt->fptr)));
-      pt->fptr[0][0] = 0;
-      pt->fptr[0][1] = 0;
-      pt->vals = NULL;
-    }
-    else {
-      /* last row of fptr is just nonzero inds */
-      pt->nfibs[nmodes-1] = ptnnz;
-
-      pt->fids[nmodes-1] = splatt_malloc(ptnnz * sizeof(**(pt->fids)));
-      if (omp_in_parallel()) {
-        for (idx_t i = 0; i < ptnnz; ++i) {
-          pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][startnnz + i];
+      /* empty tile */
+      if(ptnnz == 0) {
+        if(0 == m) {
+          for(idx_t i=0; i < ct->nmodes; ++i) {
+            pt->fptr[i] = NULL;
+            pt->fids[i] = NULL;
+            pt->nfibs[i] = 0;
+          }
+          /* first fptr may be accessed anyway */
+          if(!omp_in_parallel()) {
+            pt->fptr[0] = (idx_t *) splatt_malloc(2 * sizeof(**(pt->fptr)));
+            pt->fptr[0][0] = 0;
+            pt->fptr[0][1] = 0;
+          }
+          pt->vals = NULL;
         }
       }
       else {
+        /* last row of fptr is just nonzero inds */
+        pt->nfibs[nmodes-1] = ptnnz;
+
+        pt->fids[nmodes-1] = ct->pt[0].fids[nmodes-1] + startnnz;
+        if (omp_in_parallel()) {
+          for (idx_t i = 0; i < ptnnz; ++i) {
+            pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][startnnz + i];
+          }
+        }
+        else {
 #pragma omp parallel for
-        for (idx_t i = 0; i < ptnnz; ++i) {
-          pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][startnnz + i];
+          for (idx_t i = 0; i < ptnnz; ++i) {
+            pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][startnnz + i];
+          }
+        }
+
+        pt->vals = ct->pt[0].vals + startnnz;
+        if (omp_in_parallel()) {
+          memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
+        }
+        else {
+          par_memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
+        }
+
+        /* create fptr entries for the rest of the modes */
+        if(omp_in_parallel()) {
+          p_set_nfibs(ct, tt, t, nnz_ptr, m);
+        }
+        else {
+          p_mk_fptr(ct, tt, t, nnz_ptr, m);
         }
       }
+    } /* for each tile */
 
-      pt->vals = splatt_malloc(ptnnz * sizeof(*(pt->vals)));
-      if (omp_in_parallel()) {
-        memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
-      }
-      else {
-        par_memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
+    if(ntiles > 1) {
+      idx_t nfibs_acc = 0;
+      idx_t nempty = 0;
+      for(idx_t t=0; t < ntiles; ++t) {
+        if(nnz_ptr[t+1] - nnz_ptr[t] == 0) {
+          if(0 == m) ++nempty;
+        }
+        else nfibs_acc += ct->pt[t].nfibs[m];
       }
 
-      /* create fptr entries for the rest of the modes */
-      for(idx_t m=0; m < tt->nmodes-1; ++m) {
-        p_mk_fptr(ct, tt, t, nnz_ptr, m);
+      ct->pt[0].fptr[m] = splatt_malloc((nfibs_acc + ntiles + nempty) * sizeof(**(ct->pt->fptr)));
+      ct->pt[0].fids[m] = splatt_malloc(nfibs_acc * sizeof(**(ct->pt->fids)));
+
+      nfibs_acc = 0;
+      nempty = 0;
+      for(idx_t t=0; t < ntiles; ++t) {
+        ct->pt[t].fptr[m] = ct->pt[0].fptr[m] + nfibs_acc + t + nempty;
+        ct->pt[t].fids[m] = ct->pt[0].fids[m] + nfibs_acc;
+        if(nnz_ptr[t+1] - nnz_ptr[t] == 0) {
+          if(0 == m) {
+            ct->pt[t].fptr[0][0] = 0;
+            ct->pt[t].fptr[0][1] = 0;
+            ++nempty;
+          }
+        }
+        else nfibs_acc += ct->pt[t].nfibs[m];
       }
+
+#pragma omp parallel for schedule(dynamic, 1)
+      for(idx_t t=0; t < ntiles; ++t) {
+        if(nnz_ptr[t+1] > nnz_ptr[t]) {
+          p_mk_fptr(ct, tt, t, nnz_ptr, m);
+        }
+      } /* for each tile */
     }
-  }
+  } /* for each mode */
 
   free(nnz_ptr);
 }
@@ -1001,13 +1095,11 @@ void csf_free_mode(
     splatt_csf * const csf)
 {
   /* free each tile of sparsity pattern */
-  for(idx_t t=0; t < csf->ntiles; ++t) {
-    free(csf->pt[t].vals);
-    free(csf->pt[t].fids[csf->nmodes-1]);
-    for(idx_t m=0; m < csf->nmodes-1; ++m) {
-      free(csf->pt[t].fptr[m]);
-      free(csf->pt[t].fids[m]);
-    }
+  free(csf->pt[0].vals);
+  free(csf->pt[0].fids[csf->nmodes-1]);
+  for(idx_t m=0; m < csf->nmodes-1; ++m) {
+    free(csf->pt[0].fptr[m]);
+    free(csf->pt[0].fids[m]);
   }
   free(csf->pt);
 }
