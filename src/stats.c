@@ -13,6 +13,7 @@
 
 #include <limits.h>
 #include <math.h>
+#include <omp.h>
 
 /******************************************************************************
  * PRIVATE FUNCTIONS
@@ -230,6 +231,7 @@ void stats_csf(
     idx_t max_fiber_nnz = 0;
     double sq_sum_fiber_nnz = 0;
 
+#pragma omp parallel for if (ct->ntiles > 1) schedule(dynamic, 1) reduction(min:min_slice_nnz,min_fiber_nnz) reduction(max:max_slice_nnz,max_fiber_nnz,max_width) reduction(+:sq_sum_slice_nnz,sq_sum_fiber_nnz,total_width,empty,total_nslices,total_nfibers)
     for (idx_t t=0; t < ct->ntiles; ++t) {
       if(ct->pt[t].vals == NULL) {
         ++empty;
@@ -248,7 +250,7 @@ void stats_csf(
       idx_t nfibers = sptr[nslices];
       total_nfibers += nfibers;
 
-#pragma omp parallel for reduction(min:min_slice_nnz,min_fiber_nnz) reduction(max:max_slice_nnz,max_fiber_nnz,max_width) reduction(+:sq_sum_slice_nnz,sq_sum_fiber_nnz,total_width)
+#pragma omp parallel for if (ct->ntiles <= 1) reduction(min:min_slice_nnz,min_fiber_nnz) reduction(max:max_slice_nnz,max_fiber_nnz,max_width) reduction(+:sq_sum_slice_nnz,sq_sum_fiber_nnz,total_width)
       for(idx_t s=0; s < nslices; ++s) {
         idx_t const fid = (sids == NULL) ? s : sids[s];
 
