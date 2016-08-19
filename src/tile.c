@@ -10,6 +10,13 @@
 
 #include <omp.h>
 
+#ifdef __AVX512F__
+//#define HBW_ALLOC
+#endif
+#ifdef HBW_ALLOC
+#include <hbwmalloc.h>
+#endif
+
 /******************************************************************************
  * PRIVATE FUNCTIONS
  *****************************************************************************/
@@ -286,12 +293,21 @@ idx_t * tt_densetile(
     tsizes[m] = SS_MAX(tt->dims[m] / tile_dims[m], 1);
   }
 
-  sptensor_t * newtt = NULL;
-  idx_t * tcounts = (idx_t *) splatt_malloc((omp_get_max_threads()*ntiles+1)*sizeof(idx_t));
+  int nthreads = SS_MAX(SS_MIN((1L << 36)/(ntiles*sizeof(idx_t)), omp_get_max_threads()), 1);
 
-#pragma omp parallel
+  sptensor_t * newtt = NULL;
+#ifdef HBW_ALLOC
+  idx_t * tcounts;
+  int ret = hbw_posix_memalign((void **)&tcounts, 4096, (nthreads*ntiles + 1)*sizeof(idx_t));
+  if(ret != 0) {
+    fprintf(stderr, "SPALTT: hbw_posix_memalign() returned %d.\n", ret);
+  }
+#else
+  idx_t * tcounts = (idx_t *) splatt_malloc((nthreads*ntiles+1)*sizeof(idx_t));
+#endif
+
+#pragma omp parallel num_threads(nthreads)
   {
-    int nthreads = omp_get_num_threads();
     int tid = omp_get_thread_num();
 
     idx_t * tcounts_private = tcounts + tid*ntiles;
@@ -379,7 +395,11 @@ idx_t * tt_densetile(
   }
   tt_free(newtt);
 
-  return tcounts;
+  idx_t *real_tcounts = (idx_t *)splatt_malloc((ntiles + 1)*sizeof(idx_t));
+  par_memcpy(real_tcounts, tcounts, (ntiles + 1)*sizeof(idx_t));
+  splatt_free(tcounts);
+
+  return real_tcounts;
 }
 
 
