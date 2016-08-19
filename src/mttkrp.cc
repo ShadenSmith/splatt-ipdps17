@@ -44,6 +44,11 @@ static volatile long locks[NLOCKS*SPLATT_LOCK_PAD];
 static omp_lock_t locks[NLOCKS*SPLATT_LOCK_PAD];
 #endif
 
+//#define SPLATT_COUNT_FLOP
+#ifdef SPLATT_COUNT_FLOP
+static long mttkrp_flops = 0;
+#endif
+
 static void p_init_locks()
 {
   if (!locks_initialized) {
@@ -161,6 +166,26 @@ static inline void p_add_hada_clear(
 }
 
 
+template<int NFACTORS>
+static inline void p_add_hada_clear_(
+  val_t * const restrict out,
+  val_t * const restrict a,
+  val_t const * const restrict b)
+{
+  __assume_aligned(out, 64);
+  __assume_aligned(a, 64);
+  __assume_aligned(b, 64);
+  for(idx_t f=0; f < NFACTORS; ++f) {
+    out[f] += a[f] * b[f];
+    a[f] = 0;
+  }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*NFACTORS;
+#endif
+}
+
+
 static inline void p_assign_hada(
   val_t * const restrict out,
   val_t const * const restrict a,
@@ -170,6 +195,25 @@ static inline void p_assign_hada(
   for(idx_t f=0; f < nfactors; ++f) {
     out[f] = a[f] * b[f];
   }
+}
+
+
+template<int NFACTORS>
+static inline void p_assign_hada_(
+  val_t * const restrict out,
+  val_t const * const restrict a,
+  val_t const * const restrict b)
+{
+  __assume_aligned(out, 64);
+  __assume_aligned(a, 64);
+  __assume_aligned(b, 64);
+  for(idx_t f=0; f < NFACTORS; ++f) {
+    out[f] = a[f] * b[f];
+  }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += NFACTORS;
+#endif
 }
 
 
@@ -185,13 +229,81 @@ static inline void p_csf_process_fiber_lock(
   for(idx_t jj=start; jj < end; ++jj) {
     val_t * const restrict leafrow = leafmat + (inds[jj] * nfactors);
     val_t const v = vals[jj];
-    splatt_set_lock(inds[jj]);
-    for(idx_t f=0; f < nfactors; ++f) {
-      leafrow[f] += v * accumbuf[f];
+#ifdef SPLATT_RTM
+    if(_XBEGIN_STARTED == _xbegin()) {
+      for(idx_t f=0; f < nfactors; ++f) {
+        leafrow[f] += v * accumbuf[f];
+      }
     }
-    splatt_unset_lock(inds[jj]);
+    else
+#endif
+    {
+#ifdef SPLATT_CAS
+      for(idx_t f=0; f < nfactors; ++f) {
+        double old_leafrow, new_leafrow;
+        do {
+          old_leafrow = leafrow[f];
+          new_leafrow = old_leafrow + v * accumbuf[f];
+        } while (!__sync_bool_compare_and_swap((long long *)(leafrow + f), *((long long *)(&old_leafrow)), *((long long *)(&new_leafrow))));
+      }
+#else
+      splatt_set_lock(inds[jj]);
+      for(idx_t f=0; f < nfactors; ++f) {
+        leafrow[f] += v * accumbuf[f];
+      }
+      splatt_unset_lock(inds[jj]);
+#endif
+    }
   }
 }
+
+
+template<int NFACTORS>
+static inline void p_csf_process_fiber_lock_(
+  val_t * const leafmat,
+  val_t const * const restrict accumbuf,
+  idx_t const start,
+  idx_t const end,
+  fidx_t const * const restrict inds,
+  val_t const * const restrict vals)
+{
+  __assume_aligned(accumbuf, 64);
+  for(idx_t jj=start; jj < end; ++jj) {
+    val_t * const restrict leafrow = leafmat + (inds[jj] * NFACTORS);
+    __assume_aligned(leafrow, 64);
+    val_t const v = vals[jj];
+#ifdef SPLATT_RTM
+    if(_XBEGIN_STARTED == _xbegin()) {
+      for(idx_t f=0; f < NFACTORS; ++f) {
+        leafrow[f] += v * accumbuf[f];
+      }
+    }
+    else
+#endif
+    {
+#ifdef SPLATT_CAS
+      for(idx_t f=0; f < NFACTORS; ++f) {
+        double old_leafrow, new_leafrow;
+        do {
+          old_leafrow = leafrow[f];
+          new_leafrow = old_leafrow + v * accumbuf[f];
+        } while (!__sync_bool_compare_and_swap((long long *)(leafrow + f), *((long long *)(&old_leafrow)), *((long long *)(&new_leafrow))));
+      }
+#else
+      splatt_set_lock(inds[jj]);
+      for(idx_t f=0; f < NFACTORS; ++f) {
+        leafrow[f] += v * accumbuf[f];
+      }
+      splatt_unset_lock(inds[jj]);
+#endif
+    }
+  }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*NFACTORS*(end - start);
+#endif
+}
+
 
 static inline void p_csf_process_fiber_nolock(
   val_t * const leafmat,
@@ -212,6 +324,31 @@ static inline void p_csf_process_fiber_nolock(
 }
 
 
+template<int NFACTORS>
+static inline void p_csf_process_fiber_nolock_(
+  val_t * const leafmat,
+  val_t const * const restrict accumbuf,
+  idx_t const start,
+  idx_t const end,
+  fidx_t const * const restrict inds,
+  val_t const * const restrict vals)
+{
+  __assume_aligned(accumbuf, 64);
+  for(idx_t jj=start; jj < end; ++jj) {
+    val_t * const restrict leafrow = leafmat + (inds[jj] * NFACTORS);
+    __assume_aligned(leafrow, 64);
+    val_t const v = vals[jj];
+    for(idx_t f=0; f < NFACTORS; ++f) {
+      leafrow[f] += v * accumbuf[f];
+    }
+  }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*NFACTORS*(end - start);
+#endif
+}
+
+
 static inline void p_csf_process_fiber(
   val_t * const restrict accumbuf,
   idx_t const nfactors,
@@ -229,6 +366,32 @@ static inline void p_csf_process_fiber(
       accumbuf[f] += v * row[f];
     }
   }
+}
+
+
+template<int NFACTORS>
+static inline void p_csf_process_fiber_(
+  val_t * const restrict accumbuf,
+  val_t const * const leafmat,
+  idx_t const start,
+  idx_t const end,
+  fidx_t const * const inds,
+  val_t const * const vals)
+{
+  /* foreach nnz in fiber */
+  for(idx_t j=start; j < end; ++j) {
+    val_t const v = vals[j] ;
+    val_t const * const restrict row = leafmat + (NFACTORS * inds[j]);
+    __assume_aligned(row, 64);
+    __assume_aligned(accumbuf, 64);
+    for(idx_t f=0; f < NFACTORS; ++f) {
+      accumbuf[f] += v * row[f];
+    }
+  }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*NFACTORS*(end - start);
+#endif
 }
 
 
@@ -296,6 +459,77 @@ static inline void p_propagate_up(
     out[f] = buf[init_depth+1][f];
   }
 }
+
+
+template<int NFACTORS>
+static inline void p_propagate_up_(
+  val_t * const out,
+  val_t * const * const buf,
+  idx_t * const restrict idxstack,
+  idx_t const init_depth,
+  idx_t const init_idx,
+  idx_t const * const * const fp,
+  fidx_t const * const * const fids,
+  val_t const * const restrict vals,
+  val_t ** mvals,
+  idx_t const nmodes)
+{
+  /* push initial idx initialize idxstack */
+  idxstack[init_depth] = init_idx;
+  for(idx_t m=init_depth+1; m < nmodes; ++m) {
+    idxstack[m] = fp[m-1][idxstack[m-1]];
+  }
+
+  assert(init_depth < nmodes-1);
+
+  /* clear out accumulation buffer */
+  __assume_aligned(out, 64);
+  for(idx_t f=0; f < NFACTORS; ++f) {
+    __assume_aligned(buf[init_depth+1], 64);
+    buf[init_depth+1][f] = 0;
+  }
+
+  while(idxstack[init_depth+1] < fp[init_depth][init_idx+1]) {
+    /* skip to last internal mode */
+    idx_t depth = nmodes - 2;
+
+    /* process all nonzeros [start, end) into buf[depth]*/
+    idx_t const start = fp[depth][idxstack[depth]];
+    idx_t const end   = fp[depth][idxstack[depth]+1];
+    p_csf_process_fiber_<NFACTORS>(buf[depth+1], mvals[depth+1],
+        start, end, fids[depth+1], vals);
+
+    idxstack[depth+1] = end;
+
+    /* exit early if there is no propagation to do... */
+    if(init_depth == nmodes-2) {
+      for(idx_t f=0; f < NFACTORS; ++f) {
+        __assume_aligned(buf[depth+1], 64);
+        out[f] = buf[depth+1][f];
+      }
+      return;
+    }
+
+    /* Propagate up until we reach a node with more children to process */
+    do {
+      /* propagate result up and clear buffer for next sibling */
+      val_t const * const restrict fibrow
+          = mvals[depth] + (fids[depth][idxstack[depth]] * NFACTORS);
+      p_add_hada_clear_<NFACTORS>(buf[depth], buf[depth+1], fibrow);
+
+      ++idxstack[depth];
+      --depth;
+    } while(depth > init_depth &&
+        idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
+  } /* end DFS */
+
+  /* copy to out */
+  for(idx_t f=0; f < NFACTORS; ++f) {
+    __assume_aligned(buf[init_depth+1], 64);
+    out[f] = buf[init_depth+1][f];
+  }
+}
+
 
 template<int NFACTORS, bool TILED = false>
 static void p_csf_mttkrp_root3_kernel_(
@@ -1590,7 +1824,7 @@ static void p_csf_mttkrp_root_tiled(
   idx_t const nfactors = mats[0]->J;
 
   val_t * mvals[MAX_NMODES];
-  val_t * buf[MAX_NMODES];
+  __declspec(aligned(64)) val_t * buf[MAX_NMODES];
   idx_t idxstack[MAX_NMODES];
 
   int const tid = omp_get_thread_num();
@@ -1667,21 +1901,65 @@ static void p_csf_mttkrp_root(
   idx_t const nfibs = ct->pt[tile_id].nfibs[0];
   assert(nfibs <= mats[MAX_NMODES]->I);
 
-  #pragma omp for schedule(dynamic, 16) nowait
-  for(idx_t s=0; s < nfibs; ++s) {
-    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+  if(NULL == fids[0]) {
+    #pragma omp for schedule(dynamic, 16) nowait
+    for(idx_t s=0; s < nfibs; ++s) {
+      fidx_t const fid = s;
 
-    assert(fid < mats[MAX_NMODES]->I);
+      assert(fid < mats[MAX_NMODES]->I);
 
-    p_propagate_up(buf[0], buf, idxstack, 0, s, fp, fids,
-        vals, mvals, nmodes, nfactors);
+      if(16 == nfactors) {
+        p_propagate_up_<16>(buf[0], buf, idxstack, 0, s, fp, fids,
+            vals, mvals, nmodes);
+      }
+      else {
+        p_propagate_up(buf[0], buf, idxstack, 0, s, fp, fids,
+            vals, mvals, nmodes, nfactors);
+      }
 
-    val_t * const restrict orow = ovals + (fid * nfactors);
-    val_t const * const restrict obuf = buf[0];
-    for(idx_t f=0; f < nfactors; ++f) {
-      orow[f] += obuf[f];
-    }
-  } /* end foreach outer slice */
+      val_t * const restrict orow = ovals + (fid * nfactors);
+      val_t const * const restrict obuf = buf[0];
+      for(idx_t f=0; f < nfactors; ++f) {
+        orow[f] += obuf[f];
+      }
+    } /* end foreach outer slice */
+  }
+  else {
+    int tid = omp_get_thread_num();
+    int nthreads = omp_get_num_threads();
+
+    idx_t const nrows = mats[MAX_NMODES]->I;
+    idx_t rows_per_thread = (nrows + nthreads - 1)/nthreads;
+    idx_t row_begin = SS_MIN(rows_per_thread*tid, nrows);
+    idx_t row_end = SS_MIN(row_begin + rows_per_thread, nrows);
+
+    idx_t sbegin = std::lower_bound(fids[0], fids[0] + nfibs, row_begin) - fids[0];
+
+    for(idx_t s=sbegin; s < nfibs && fids[0][s] < row_end; ++s) {
+      fidx_t const fid = fids[0][s];
+
+      assert(fid < mats[MAX_NMODES]->I);
+
+      if(16 == nfactors) {
+        p_propagate_up_<16>(buf[0], buf, idxstack, 0, s, fp, fids,
+            vals, mvals, nmodes);
+      }
+      else {
+        p_propagate_up(buf[0], buf, idxstack, 0, s, fp, fids,
+            vals, mvals, nmodes, nfactors);
+      }
+
+      val_t * const restrict orow = ovals + (fid * nfactors);
+      val_t const * const restrict obuf = buf[0];
+      for(idx_t f=0; f < nfactors; ++f) {
+        orow[f] += obuf[f];
+      }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+      mttkrp_flops += nfactors;
+#endif
+    } /* end foreach outer slice */
+  }
 }
 
 
@@ -1752,8 +2030,6 @@ static void p_csf_mttkrp_leaf_tiled3(
     }
   }
 }
-
-
 
 
 static void p_csf_mttkrp_leaf_tiled(
@@ -1838,6 +2114,89 @@ static void p_csf_mttkrp_leaf_tiled(
 }
 
 
+template<int NFACTORS>
+static void p_csf_mttkrp_leaf_tiled_(
+  splatt_csf const * const ct,
+  idx_t const tile_id,
+  matrix_t ** mats,
+  thd_info * const thds)
+{
+  val_t const * const vals = ct->pt[tile_id].vals;
+  idx_t const nmodes = ct->nmodes;
+  /* pass empty tiles */
+  if(vals == NULL) {
+    return;
+  }
+  if(nmodes == 3) {
+    p_csf_mttkrp_leaf_tiled3(ct, tile_id, mats, thds);
+    return;
+  }
+
+  /* extract tensor structures */
+  idx_t const * const * const restrict fp
+      = (idx_t const * const *) ct->pt[tile_id].fptr;
+  fidx_t const * const * const restrict fids
+      = (fidx_t const * const *) ct->pt[tile_id].fids;
+
+  val_t * mvals[MAX_NMODES];
+  val_t * buf[MAX_NMODES];
+  idx_t idxstack[MAX_NMODES];
+
+  int const tid = omp_get_thread_num();
+  for(idx_t m=0; m < nmodes; ++m) {
+    mvals[m] = mats[ct->dim_perm[m]]->vals;
+    /* grab the next row of buf from thds */
+    buf[m] = ((val_t *) thds[tid].scratch[2]) + (NFACTORS * m);
+  }
+
+  /* foreach outer slice */
+  idx_t const nouter = ct->pt[tile_id].nfibs[0];
+  for(idx_t s=0; s < nouter; ++s) {
+    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+    idxstack[0] = s;
+
+    /* clear out stale data */
+    for(idx_t m=1; m < nmodes-1; ++m) {
+      idxstack[m] = fp[m-1][idxstack[m-1]];
+    }
+
+    /* first buf will always just be a matrix row */
+    val_t const * const rootrow = mvals[0] + (fid*NFACTORS);
+    val_t * const rootbuf = buf[0];
+    __assume_aligned(rootrow, 64);
+    __assume_aligned(rootbuf, 64);
+    for(idx_t f=0; f < NFACTORS; ++f) {
+      rootbuf[f] = rootrow[f];
+    }
+
+    idx_t depth = 0;
+
+    idx_t const outer_end = fp[0][s+1];
+    while(idxstack[1] < outer_end) {
+      /* move down to an nnz node */
+      for(; depth < nmodes-2; ++depth) {
+        /* propogate buf down */
+        val_t const * const restrict drow
+            = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
+        p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
+      }
+
+      /* process all nonzeros [start, end) */
+      idx_t const start = fp[depth][idxstack[depth]];
+      idx_t const end   = fp[depth][idxstack[depth]+1];
+      p_csf_process_fiber_nolock_<NFACTORS>(mats[MAX_NMODES]->vals, buf[depth],
+          start, end, fids[depth+1], vals);
+
+      /* now move back up to the next unprocessed child */
+      do {
+        ++idxstack[depth];
+        --depth;
+      } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
+    } /* end DFS */
+  } /* end outer slice loop */
+}
+
+
 static void p_csf_mttkrp_leaf(
   splatt_csf const * const ct,
   idx_t const tile_id,
@@ -1910,6 +2269,90 @@ static void p_csf_mttkrp_leaf(
       idx_t const end   = fp[depth][idxstack[depth]+1];
       p_csf_process_fiber_lock(mats[MAX_NMODES]->vals, buf[depth],
           nfactors, start, end, fids[depth+1], vals);
+
+      /* now move back up to the next unprocessed child */
+      do {
+        ++idxstack[depth];
+        --depth;
+      } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
+    } /* end DFS */
+  } /* end outer slice loop */
+}
+
+
+template<int NFACTORS>
+static void p_csf_mttkrp_leaf_(
+  splatt_csf const * const ct,
+  idx_t const tile_id,
+  matrix_t ** mats,
+  thd_info * const thds)
+{
+  /* extract tensor structures */
+  val_t const * const vals = ct->pt[tile_id].vals;
+  idx_t const nmodes = ct->nmodes;
+
+  if(vals == NULL) {
+    return;
+  }
+  if(nmodes == 3) {
+    p_csf_mttkrp_leaf3(ct, tile_id, mats, thds);
+    return;
+  }
+
+  idx_t const * const * const restrict fp
+      = (idx_t const * const *) ct->pt[tile_id].fptr;
+  fidx_t const * const * const restrict fids
+      = (fidx_t const * const *) ct->pt[tile_id].fids;
+
+  val_t * mvals[MAX_NMODES];
+  val_t * buf[MAX_NMODES];
+  idx_t idxstack[MAX_NMODES];
+
+  int const tid = omp_get_thread_num();
+  for(idx_t m=0; m < nmodes; ++m) {
+    mvals[m] = mats[ct->dim_perm[m]]->vals;
+    /* grab the next row of buf from thds */
+    buf[m] = ((val_t *) thds[tid].scratch[2]) + (NFACTORS * m);
+  }
+
+  /* foreach outer slice */
+  idx_t const nslices = ct->pt[tile_id].nfibs[0];
+  #pragma omp for schedule(dynamic, 16) nowait
+  for(idx_t s=0; s < nslices; ++s) {
+    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+    idxstack[0] = s;
+
+    /* clear out stale data */
+    for(idx_t m=1; m < nmodes-1; ++m) {
+      idxstack[m] = fp[m-1][idxstack[m-1]];
+    }
+
+    /* first buf will always just be a matrix row */
+    val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
+    val_t * const rootbuf = buf[0];
+    __assume_aligned(rootrow, 64);
+    __assume_aligned(rootbuf, 64);
+    for(idx_t f=0; f < NFACTORS; ++f) {
+      rootbuf[f] = rootrow[f];
+    }
+
+    idx_t depth = 0;
+
+    idx_t const outer_end = fp[0][s+1];
+    while(idxstack[1] < outer_end) {
+      /* move down to an nnz node */
+      for(; depth < nmodes-2; ++depth) {
+        /* propogate buf down */
+        val_t const * const restrict drow
+            = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
+        p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
+      }
+
+      /* process all nonzeros [start, end) */
+      idx_t const start = fp[depth][idxstack[depth]];
+      idx_t const end   = fp[depth][idxstack[depth]+1];
+      p_csf_process_fiber_lock_<NFACTORS>(mats[MAX_NMODES]->vals, buf[depth],
+          start, end, fids[depth+1], vals);
 
       /* now move back up to the next unprocessed child */
       do {
@@ -2087,6 +2530,95 @@ static void p_csf_mttkrp_internal_tiled(
 }
 
 
+template<int NFACTORS>
+static void p_csf_mttkrp_internal_tiled_(
+  splatt_csf const * const ct,
+  idx_t const tile_id,
+  matrix_t ** mats,
+  idx_t const mode,
+  thd_info * const thds)
+{
+  /* extract tensor structures */
+  idx_t const nmodes = ct->nmodes;
+  val_t const * const vals = ct->pt[tile_id].vals;
+  /* pass empty tiles */
+  if(vals == NULL) {
+    return;
+  }
+  if(nmodes == 3) {
+    p_csf_mttkrp_internal_tiled3(ct, tile_id, mats, thds);
+    return;
+  }
+
+  idx_t const * const * const restrict fp
+      = (idx_t const * const *) ct->pt[tile_id].fptr;
+  fidx_t const * const * const restrict fids
+      = (fidx_t const * const *) ct->pt[tile_id].fids;
+
+  /* find out which level in the tree this is */
+  idx_t outdepth = csf_mode_depth(mode, ct->dim_perm, nmodes);
+
+  val_t * mvals[MAX_NMODES];
+  val_t * buf[MAX_NMODES];
+  idx_t idxstack[MAX_NMODES];
+
+  int const tid = omp_get_thread_num();
+  for(idx_t m=0; m < nmodes; ++m) {
+    mvals[m] = mats[ct->dim_perm[m]]->vals;
+    /* grab the next row of buf from thds */
+    buf[m] = ((val_t *) thds[tid].scratch[2]) + (NFACTORS * m);
+    memset(buf[m], 0, NFACTORS * sizeof(val_t));
+  }
+  val_t * const ovals = mats[MAX_NMODES]->vals;
+
+  /* foreach outer slice */
+  idx_t const nslices = ct->pt[tile_id].nfibs[0];
+  for(idx_t s=0; s < nslices; ++s) {
+    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+
+    /* push outer slice and fill stack */
+    idxstack[0] = s;
+    for(idx_t m=1; m <= outdepth; ++m) {
+      idxstack[m] = fp[m-1][idxstack[m-1]];
+    }
+
+    /* fill first buf */
+    val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
+    __assume_aligned(buf[0], 64);
+    for(idx_t f=0; f < NFACTORS; ++f) {
+      buf[0][f] = rootrow[f];
+    }
+
+    /* process entire subtree */
+    idx_t depth = 0;
+    while(idxstack[1] < fp[0][s+1]) {
+      /* propagate values down to outdepth-1 */
+      for(; depth < outdepth; ++depth) {
+        val_t const * const restrict drow
+            = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
+        p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
+      }
+
+      /* write to output and clear buf[outdepth] for next subtree */
+      fidx_t const noderow = fids[outdepth][idxstack[outdepth]];
+
+      /* propagate value up to buf[outdepth] */
+      p_propagate_up_<NFACTORS>(buf[outdepth], buf, idxstack, outdepth,idxstack[outdepth],
+          fp, fids, vals, mvals, nmodes);
+
+      val_t * const restrict outbuf = ovals + (noderow * NFACTORS);
+      p_add_hada_clear_<NFACTORS>(outbuf, buf[outdepth], buf[outdepth-1]);
+
+      /* backtrack to next unfinished node */
+      do {
+        ++idxstack[depth];
+        --depth;
+      } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
+    } /* end DFS */
+  } /* end foreach outer slice */
+}
+
+
 static void p_csf_mttkrp_internal(
   splatt_csf const * const ct,
   idx_t const tile_id,
@@ -2178,6 +2710,306 @@ static void p_csf_mttkrp_internal(
 }
 
 
+template<int NFACTORS>
+static void p_csf_mttkrp_internal_(
+  splatt_csf const * const ct,
+  idx_t const tile_id,
+  matrix_t ** mats,
+  idx_t const mode,
+  thd_info * const thds)
+{
+  /* extract tensor structures */
+  idx_t const nmodes = ct->nmodes;
+  val_t const * const vals = ct->pt[tile_id].vals;
+  /* pass empty tiles */
+  if(vals == NULL) {
+    return;
+  }
+  if(nmodes == 3) {
+    p_csf_mttkrp_internal3(ct, tile_id, mats, thds);
+    return;
+  }
+
+  idx_t const * const * const restrict fp
+      = (idx_t const * const *) ct->pt[tile_id].fptr;
+  fidx_t const * const * const restrict fids
+      = (fidx_t const * const *) ct->pt[tile_id].fids;
+
+  /* find out which level in the tree this is */
+  idx_t outdepth = csf_mode_depth(mode, ct->dim_perm, nmodes);
+
+  val_t * mvals[MAX_NMODES];
+  val_t * buf[MAX_NMODES];
+  idx_t idxstack[MAX_NMODES];
+
+  int const tid = omp_get_thread_num();
+  for(idx_t m=0; m < nmodes; ++m) {
+    mvals[m] = mats[ct->dim_perm[m]]->vals;
+    /* grab the next row of buf from thds */
+    buf[m] = ((val_t *) thds[tid].scratch[2]) + (NFACTORS * m);
+    memset(buf[m], 0, NFACTORS * sizeof(val_t));
+  }
+  val_t * const ovals = mats[MAX_NMODES]->vals;
+
+  /* foreach outer slice */
+  idx_t const nslices = ct->pt[tile_id].nfibs[0];
+  if(NULL == fids[0]) {
+    #pragma omp for schedule(dynamic, 16) nowait
+    for(idx_t s=0; s < nslices; ++s) {
+      fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+
+      /* push outer slice and fill stack */
+      idxstack[0] = s;
+      for(idx_t m=1; m <= outdepth; ++m) {
+        idxstack[m] = fp[m-1][idxstack[m-1]];
+      }
+
+      /* fill first buf */
+      val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
+      __assume_aligned(buf[0], 64);
+      __assume_aligned(rootrow, 64);
+      for(idx_t f=0; f < NFACTORS; ++f) {
+        buf[0][f] = rootrow[f];
+      }
+
+      /* process entire subtree */
+      idx_t depth = 0;
+      while(idxstack[1] < fp[0][s+1]) {
+        /* propagate values down to outdepth-1 */
+        for(; depth < outdepth; ++depth) {
+          val_t const * const restrict drow
+              = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
+          p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
+        }
+
+        /* write to output and clear buf[outdepth] for next subtree */
+        fidx_t const noderow = fids[outdepth][idxstack[outdepth]];
+
+        /* propagate value up to buf[outdepth] */
+        p_propagate_up_<NFACTORS>(buf[outdepth], buf, idxstack, outdepth,idxstack[outdepth],
+            fp, fids, vals, mvals, nmodes);
+
+        val_t * const restrict outbuf = ovals + (noderow * NFACTORS);
+        if(16 == NFACTORS) {
+          val_t * const restrict out = outbuf;
+          val_t * const restrict a = buf[outdepth];
+          val_t const * const restrict b = buf[outdepth-1];
+
+          __assume_aligned(out, 64);
+          __assume_aligned(a, 64);
+          __assume_aligned(b, 64);
+
+#ifdef SPLATT_RTM
+          if(_XBEGIN_STARTED == _xbegin()) {
+            for(idx_t f=0; f < NFACTORS; ++f) {
+              out[f] += a[f]*b[f];
+            }
+          }
+          else
+#endif
+          {
+#ifdef SPLATT_CAS
+            __m128d old_out, new_out, acc;
+
+            do {
+              old_out = _mm_load_pd(out);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a), _mm_load_pd(b), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)out, *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 2);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 2), _mm_load_pd(b + 2), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 2), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 4);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 4), _mm_load_pd(b + 4), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 4), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 6);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 6), _mm_load_pd(b + 6), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 6), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 8);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 8), _mm_load_pd(b + 8), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 8), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 10);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 10), _mm_load_pd(b + 10), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 10), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 12);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 12), _mm_load_pd(b + 12), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 12), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 14);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 14), _mm_load_pd(b + 14), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 14), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+#else /* !SPLATT_CAS */
+            splatt_set_lock(noderow);
+            for(idx_t f=0; f < NFACTORS; ++f) {
+              out[f] += a[f]*b[f];
+            }
+            splatt_unset_lock(noderow);
+#endif /* !SPLATT_CAS */
+          }
+
+          for(idx_t f=0; f < NFACTORS; ++f) {
+            a[f] = 0;
+          }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+          mttkrp_flops += 2*NFACTORS;
+#endif
+        }
+        else {
+          splatt_set_lock(noderow);
+          p_add_hada_clear_<NFACTORS>(outbuf, buf[outdepth], buf[outdepth-1]);
+          splatt_unset_lock(noderow);
+        }
+
+        /* backtrack to next unfinished node */
+        do {
+          ++idxstack[depth];
+          --depth;
+        } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
+      } /* end DFS */
+    } /* end foreach outer slice */
+  }
+  else {
+    /* fids[0] != NULL means we're using tiling, where we parallelize over tiles */
+    for(idx_t s=0; s < nslices; ++s) {
+      fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+
+      /* push outer slice and fill stack */
+      idxstack[0] = s;
+      for(idx_t m=1; m <= outdepth; ++m) {
+        idxstack[m] = fp[m-1][idxstack[m-1]];
+      }
+
+      /* fill first buf */
+      val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
+      __assume_aligned(buf[0], 64);
+      __assume_aligned(rootrow, 64);
+      for(idx_t f=0; f < NFACTORS; ++f) {
+        buf[0][f] = rootrow[f];
+      }
+
+      /* process entire subtree */
+      idx_t depth = 0;
+      while(idxstack[1] < fp[0][s+1]) {
+        /* propagate values down to outdepth-1 */
+        for(; depth < outdepth; ++depth) {
+          val_t const * const restrict drow
+              = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
+          p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
+        }
+
+        /* write to output and clear buf[outdepth] for next subtree */
+        fidx_t const noderow = fids[outdepth][idxstack[outdepth]];
+
+        /* propagate value up to buf[outdepth] */
+        p_propagate_up_<NFACTORS>(buf[outdepth], buf, idxstack, outdepth,idxstack[outdepth],
+            fp, fids, vals, mvals, nmodes);
+
+        val_t * const restrict outbuf = ovals + (noderow * NFACTORS);
+        if(16 == NFACTORS) {
+          val_t * const restrict out = outbuf;
+          val_t * const restrict a = buf[outdepth];
+          val_t const * const restrict b = buf[outdepth-1];
+
+          __assume_aligned(out, 64);
+          __assume_aligned(a, 64);
+          __assume_aligned(b, 64);
+
+#ifdef SPLATT_RTM
+          if(_XBEGIN_STARTED == _xbegin()) {
+            for(idx_t f=0; f < NFACTORS; ++f) {
+              out[f] += a[f]*b[f];
+            }
+          }
+          else
+#endif
+          {
+#ifdef SPLATT_CAS
+            __m128d old_out, new_out, acc;
+
+            do {
+              old_out = _mm_load_pd(out);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a), _mm_load_pd(b), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)out, *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 2);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 2), _mm_load_pd(b + 2), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 2), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 4);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 4), _mm_load_pd(b + 4), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 4), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 6);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 6), _mm_load_pd(b + 6), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 6), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 8);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 8), _mm_load_pd(b + 8), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 8), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 10);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 10), _mm_load_pd(b + 10), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 10), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 12);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 12), _mm_load_pd(b + 12), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 12), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+            do {
+              old_out = _mm_load_pd(out + 14);
+              new_out = _mm_fmadd_pd(_mm_load_pd(a + 14), _mm_load_pd(b + 14), old_out);
+            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 14), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+#else /* !SPLATT_CAS */
+            splatt_set_lock(noderow);
+            for(idx_t f=0; f < NFACTORS; ++f) {
+              out[f] += a[f]*b[f];
+            }
+            splatt_unset_lock(noderow);
+#endif /* !SPLATT_CAS */
+          }
+
+          for(idx_t f=0; f < NFACTORS; ++f) {
+            a[f] = 0;
+          }
+        }
+        else {
+          splatt_set_lock(noderow);
+          p_add_hada_clear_<NFACTORS>(outbuf, buf[outdepth], buf[outdepth-1]);
+          splatt_unset_lock(noderow);
+        }
+
+        /* backtrack to next unfinished node */
+        do {
+          ++idxstack[depth];
+          --depth;
+        } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
+      } /* end DFS */
+    } /* end foreach outer slice */
+  }
+}
+
+
 /* determine which function to call */
 static void p_root_decide(
     splatt_csf const * const tensor,
@@ -2197,6 +3029,10 @@ static void p_root_decide(
 #endif
     par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
+#ifdef SPLATT_COUNT_FLOP
+  mttkrp_flops = 0; 
+#endif
+
   #pragma omp parallel
   {
     timer_start(&thds[omp_get_thread_num()].ttime);
@@ -2211,7 +3047,7 @@ static void p_root_decide(
       if(opts[SPLATT_OPTION_TILEDEPTH] > 0) {
         for(idx_t t=0; t < tensor->ntiles; ++t) {
           p_csf_mttkrp_root(tensor, t, mats, thds);
-          #pragma omp barrier
+          //#pragma omp barrier
         }
       } else {
         /* distribute tiles to threads */
@@ -2249,8 +3085,13 @@ static void p_root_decide(
     double gbps = (mbytes + fbytes)/time.seconds/1e9;
     double gflops = tensor->mttkrp_flops[mode]/time.seconds/1e9;
 
-    printf("       csf_mttkrp_root (%0.3fs, %.3f GBps, %.3f GF/s)\n",
-        time.seconds, gbps, gflops);
+#ifdef SPLATT_COUNT_FLOP
+    printf("       csf_mttkrp_root (%0.3fs, %.3f GBps, %.3f GFs)\n",
+        time.seconds, gbps, (double)mttkrp_flops/1e9);
+#else
+    printf("       csf_mttkrp_root (%0.3fs, %.3f GBps)\n",
+        time.seconds, gbps);
+#endif
   }
 }
 
@@ -2271,6 +3112,12 @@ static void p_leaf_decide(
   matrix_t * const M = mats[MAX_NMODES];
   par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
+  idx_t const nfactors = mats[0]->J;
+
+#ifdef SPLATT_COUNT_FLOP
+  mttkrp_flops = 0; 
+#endif
+
   #pragma omp parallel
   {
     timer_start(&thds[omp_get_thread_num()].ttime);
@@ -2279,13 +3126,23 @@ static void p_leaf_decide(
     idx_t tid = 0;
     switch(tensor->which_tile) {
     case SPLATT_NOTILE:
-      p_csf_mttkrp_leaf(tensor, 0, mats, thds);
+      if(16 == nfactors) {
+        p_csf_mttkrp_leaf_<16>(tensor, 0, mats, thds);
+      }
+      else {
+        p_csf_mttkrp_leaf(tensor, 0, mats, thds);
+      }
       break;
     case SPLATT_DENSETILE:
       /* this mode may not be tiled due to minimum tiling depth */
       if(opts[SPLATT_OPTION_TILEDEPTH] > depth) {
         for(idx_t t=0; t < tensor->ntiles; ++t) {
-          p_csf_mttkrp_leaf(tensor, 0, mats, thds);
+          if(16 == nfactors) {
+            p_csf_mttkrp_leaf_<16>(tensor, 0, mats, thds);
+          }
+          else {
+            p_csf_mttkrp_leaf(tensor, 0, mats, thds);
+          }
         }
       } else {
         #pragma omp for schedule(dynamic, 1) nowait
@@ -2293,7 +3150,12 @@ static void p_leaf_decide(
           tid = get_next_tileid(TILE_BEGIN, tensor->tile_dims, nmodes,
               mode, t);
           while(tid != TILE_END) {
-            p_csf_mttkrp_leaf_tiled(tensor, tid, mats, thds);
+            if(16 == nfactors) {
+              p_csf_mttkrp_leaf_tiled_<16>(tensor, tid, mats, thds);
+            }
+            else {
+              p_csf_mttkrp_leaf_tiled(tensor, tid, mats, thds);
+            }
             tid = get_next_tileid(tid, tensor->tile_dims, nmodes, mode, t);
           }
         }
@@ -2312,7 +3174,7 @@ static void p_leaf_decide(
   timer_stop(&time);
   if (opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
     size_t mbytes = 0;
-    assert(mode == tensor->dim_perm[2]);
+    assert(mode == tensor->dim_perm[tensor->nmodes-1]);
     for (int i = 0; i < tensor->nmodes; ++i) {
       if (i != mode) mbytes += tensor->dims[i] * M->J * sizeof(val_t);
     }
@@ -2320,8 +3182,13 @@ static void p_leaf_decide(
     double gbps = (mbytes + fbytes)/time.seconds/1e9;
     double gflops = tensor->mttkrp_flops[mode]/time.seconds/1e9;
 
-    printf("       csf_mttkrp_leaf (%0.3fs, %.3f GBps, %.3f GF/s)\n",
-        time.seconds, gbps, gflops);
+#ifdef SPLATT_COUNT_FLOP
+    printf("       csf_mttkrp_leaf (%0.3fs, %.3f GBps, %.3f GFs)\n",
+        time.seconds, gbps, (double)mttkrp_flops/1e9);
+#else
+    printf("       csf_mttkrp_leaf (%0.3fs, %.3f GBps)\n",
+        time.seconds, gbps);
+#endif
   }
 }
 
@@ -2342,6 +3209,12 @@ static void p_intl_decide(
   matrix_t * const M = mats[MAX_NMODES];
   par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
+  idx_t const nfactors = mats[0]->J;
+
+#ifdef SPLATT_COUNT_FLOP
+  mttkrp_flops = 0; 
+#endif
+
   #pragma omp parallel
   {
     timer_start(&thds[omp_get_thread_num()].ttime);
@@ -2349,13 +3222,24 @@ static void p_intl_decide(
     idx_t tid = 0;
     switch(tensor->which_tile) {
     case SPLATT_NOTILE:
-      p_csf_mttkrp_internal(tensor, 0, mats, mode, thds);
+      if(16 == nfactors) {
+        p_csf_mttkrp_internal_<16>(tensor, 0, mats, mode, thds);
+      }
+      else {
+        p_csf_mttkrp_internal(tensor, 0, mats, mode, thds);
+      }
       break;
     case SPLATT_DENSETILE:
       /* this mode may not be tiled due to minimum tiling depth */
       if(opts[SPLATT_OPTION_TILEDEPTH] > depth) {
+        #pragma omp for schedule(dynamic, 1) nowait
         for(idx_t t=0; t < tensor->ntiles; ++t) {
-          p_csf_mttkrp_internal(tensor, t, mats, mode, thds);
+          if(16 == nfactors) {
+            p_csf_mttkrp_internal_<16>(tensor, t, mats, mode, thds);
+          }
+          else {
+            p_csf_mttkrp_internal(tensor, t, mats, mode, thds);
+          }
         }
       } else {
         #pragma omp for schedule(dynamic, 1) nowait
@@ -2363,7 +3247,12 @@ static void p_intl_decide(
           tid = get_next_tileid(TILE_BEGIN, tensor->tile_dims, nmodes,
               mode, t);
           while(tid != TILE_END) {
-            p_csf_mttkrp_internal_tiled(tensor, tid, mats, mode, thds);
+            if(16 == nfactors) {
+              p_csf_mttkrp_internal_tiled_<16>(tensor, tid, mats, mode, thds);
+            }
+            else {
+              p_csf_mttkrp_internal_tiled(tensor, tid, mats, mode, thds);
+            }
             tid = get_next_tileid(tid, tensor->tile_dims, nmodes, mode, t);
           }
         }
@@ -2385,7 +3274,7 @@ static void p_intl_decide(
   timer_stop(&time);
   if (opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
     size_t mbytes = 0;
-    assert(mode == tensor->dim_perm[1]);
+    assert(mode != tensor->dim_perm[0] && mode != tensor->dim_perm[tensor->nmodes-1]);
     for (int i = 0; i < tensor->nmodes; ++i) {
       if (i != mode) mbytes += tensor->dims[i] * M->J * sizeof(val_t);
     }
@@ -2393,8 +3282,13 @@ static void p_intl_decide(
     double gbps = (mbytes + fbytes)/time.seconds/1e9;
     double gflops = tensor->mttkrp_flops[mode]/time.seconds/1e9;
 
-    printf("       csf_mttkrp_internal (%0.3fs, %.3f GBps, %.3f GF/s)\n",
-        time.seconds, gbps, gflops);
+#ifdef SPLATT_COUNT_FLOP
+    printf("       csf_mttkrp_internal (%0.3fs, %.3f GBps, %.3f GFs)\n",
+        time.seconds, gbps, (double)mttkrp_flops/1e9);
+#else
+    printf("       csf_mttkrp_internal (%0.3fs, %.3f GBps)\n",
+        time.seconds, gbps);
+#endif
   }
 }
 
