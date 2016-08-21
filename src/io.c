@@ -361,7 +361,7 @@ void tt_write_file(
   for(idx_t n=0; n < tt->nnz; ++n) {
     for(idx_t m=0; m < tt->nmodes; ++m) {
       /* files are 1-indexed instead of 0 */
-      fprintf(fout, "%d", tt->ind[m][n] + 1);
+      fprintf(fout, "%"SPLATT_PF_FIDX" ", tt->ind[m][n] + 1);
     }
     fprintf(fout, "%"SPLATT_PF_VAL"\n", tt->vals[n]);
   }
@@ -514,6 +514,7 @@ void fill_binary_fidx(
     for(idx_t n=0; n < count; ++n) {
       buffer[n] = ubuf[n];
     }
+    free(ubuf);
   }
 }
 
@@ -526,11 +527,13 @@ void fill_binary_val(
   if(header->val_width == sizeof(splatt_val_t)) {
     fread(buffer, sizeof(val_t), count, fin);
   } else {
-    float fbuf;
+    float *fbuf = (float *)malloc(sizeof(float)*count);
+    fread(fbuf, sizeof(float), count, fin);
+#pragma omp parallel for
     for(idx_t n=0; n < count; ++n) {
-      fread(&fbuf, sizeof(fbuf), 1, fin);
-      buffer[n] = fbuf;
+      buffer[n] = fbuf[n];
     }
+    free(fbuf);
   }
 }
 
