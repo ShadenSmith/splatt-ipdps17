@@ -132,6 +132,11 @@ typedef enum
   SPLATT_OPTION_DECOMP,     /* Decomposition to use on distributed systems */
   SPLATT_OPTION_COMM,       /* Communication pattern to use */
 
+  SPLATT_OPTION_SYNCHRONIZATION, /* Synchronization method of non-root mode */
+  SPLATT_OPTION_PRIVATIZATION_THREASHOLD,
+    /* If this value is 0.01 for example, use privatization if dims[mode]*nthreads < nnz*0.01 */
+    /* Default is 0 (never privatize) */
+
   SPLATT_OPTION_NOPTIONS    /* Gives the size of the options array. */
 } splatt_option_type;
 
@@ -214,6 +219,16 @@ typedef enum
   SPLATT_COMM_POINT2POINT,
   SPLATT_COMM_ALL2ALL
 } splatt_comm_type;
+
+
+typedef enum
+{
+  SPLATT_SYNC_OMP_LOCK,
+  SPLATT_SYNC_TTAS, /* our own implementation of test and test-and-set lock with backoff */
+  SPLATT_SYNC_RTM, /* restricted transactional memory */
+  SPLATT_SYNC_CAS, /* compare-and-swap */
+  SPLATT_SYNC_NOSYNC, /* just to see performance with an ideal synchronization */
+} splatt_sync_type;
 
 
 static double const SPLATT_VAL_OFF = -DBL_MAX;

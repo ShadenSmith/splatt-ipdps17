@@ -357,6 +357,31 @@ void cpd_stats(
     printf("COOP");
     break;
   }
+
+  /* synchronization method */
+  if(which_csf != SPLATT_CSF_ALLMODE) {
+    printf(" SYNC-TYPE=");
+    splatt_sync_type sync_type = (splatt_sync_type)opts[SPLATT_OPTION_SYNCHRONIZATION];
+    switch(sync_type) {
+    case SPLATT_SYNC_OMP_LOCK:
+      printf("OMP");
+      break;
+    case SPLATT_SYNC_TTAS:
+      printf("TTAS");
+      break;
+    case SPLATT_SYNC_RTM:
+      printf("RTM");
+      break;
+    case SPLATT_SYNC_CAS:
+      printf("CAS");
+      break;
+    case SPLATT_SYNC_NOSYNC:
+      printf("NOSYNC");
+      break;
+    }
+
+    printf(" PRIV_THRE=%g", opts[SPLATT_OPTION_PRIVATIZATION_THREASHOLD]);
+  }
   printf("\n");
 
   char * fstorage = bytes_str(fbytes);

@@ -14,7 +14,13 @@
  *****************************************************************************/
 static char cpd_args_doc[] = "TENSOR";
 static char cpd_doc[] =
-  "splatt-cpd -- Compute the CPD of a sparse tensor.\n";
+  "splatt-cpd -- Compute the CPD of a sparse tensor.\n"
+  "Synchronization methods are:\n"
+  "  omp\t\tOpenMP lock\n"
+  "  ttas\t\tTest and test-and-set lock with backoff\n"
+  "  rtm\t\tRestricted transactional memory\n"
+  "  cas\t\tCompare and swap\n"
+  "  nosync\t\tNo synchronization (just a comparison point)\n";
 
 #define TT_NOWRITE 253
 #define TT_TOL 254
@@ -27,6 +33,10 @@ static struct argp_option cpd_options[] = {
   {"tile", TT_TILE, 0, 0, "use tiling during SPLATT"},
   {"nowrite", TT_NOWRITE, 0, 0, "do not write output to file"},
   {"verbose", 'v', 0, 0, "turn on verbose output (default: no)"},
+  {"tile-depth", 'd', "TILE_DEPTH", 0, "use tiling from the given depth (default: 1)"},
+  {"sync", 's', "SYNC", 0, "synchronization option (default: omp)"},
+  {"priv-thre", 'p', "PRIV_THRE", 0, "privatization threshold. 0.01 means privatization if dims[m]*nthreads < nnz*0.01 for mode m (default: 0 -> never privatize)"},
+  {"alloc", 'a', "ALLOC", 0, "1: one-mode, 2: two-mode, 3+: all-mode (default:all-mode)"},
   { 0 }
 };
 
@@ -92,6 +102,34 @@ static error_t parse_cpd_opt(
     break;
   case 'r':
     args->nfactors = atoi(arg);
+    break;
+  case 'd':
+    args->opts[SPLATT_OPTION_TILEDEPTH] = (double) atoi(arg);
+    break;
+  case 's':
+    if(strcmp(arg, "omp") == 0) {
+      args->opts[SPLATT_OPTION_SYNCHRONIZATION] = SPLATT_SYNC_OMP_LOCK;
+    } else if(strcmp(arg, "ttas") == 0) {
+      args->opts[SPLATT_OPTION_SYNCHRONIZATION] = SPLATT_SYNC_TTAS;
+    } else if(strcmp(arg, "rtm") == 0) {
+      args->opts[SPLATT_OPTION_SYNCHRONIZATION] = SPLATT_SYNC_RTM;
+    } else if(strcmp(arg, "cas") == 0) {
+      args->opts[SPLATT_OPTION_SYNCHRONIZATION] = SPLATT_SYNC_CAS;
+    } else if(strcmp(arg, "nosync") == 0) {
+      args->opts[SPLATT_OPTION_SYNCHRONIZATION] = SPLATT_SYNC_NOSYNC;
+    } else {
+      fprintf(stderr, "SPLATT: unknown synchronization option. Falling back to the default omp lock option\n");
+    }
+    break;
+  case 'p':
+    args->opts[SPLATT_OPTION_PRIVATIZATION_THREASHOLD] = atof(arg);
+    break;
+  case 'a':
+    if(atoi(arg) == 1) {
+      args->opts[SPLATT_OPTION_CSF_ALLOC] = SPLATT_CSF_ONEMODE;
+    } else if(atoi(arg) == 2) {
+      args->opts[SPLATT_OPTION_CSF_ALLOC] = SPLATT_CSF_TWOMODE;
+    }
     break;
 
   case ARGP_KEY_ARG:
