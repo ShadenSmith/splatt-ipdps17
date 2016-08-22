@@ -1043,7 +1043,7 @@ void radix_sort(sptensor_t * const tt, idx_t *cmplt)
           if (j == jbegin) break;
         }
       }
-      if (0 == tid) printf("\tscatter takes %f\n", omp_get_wtime() - t);
+      //if (0 == tid) printf("\tscatter takes %f\n", omp_get_wtime() - t);
     } /* omp parallel */
   } /* for each mode */
 
@@ -1118,7 +1118,7 @@ static void p_counting_sort_hybrid3(sptensor_t * const tt, idx_t *cmplt)
     }
 
 #pragma omp barrier
-#pragma omp master
+    if(0 == tid)
     {
       //printf("\tgather takes %f\n", omp_get_wtime() - t);
       t = omp_get_wtime();
@@ -1130,6 +1130,9 @@ static void p_counting_sort_hybrid3(sptensor_t * const tt, idx_t *cmplt)
 
         histogram_array[transpose_j1] += histogram_array[transpose_j0];
       }
+    }
+    else {
+      t = omp_get_wtime();
     }
 #pragma omp barrier
 
@@ -1144,6 +1147,7 @@ static void p_counting_sort_hybrid3(sptensor_t * const tt, idx_t *cmplt)
     }
 
 #pragma omp barrier
+    t = omp_get_wtime();
 
     /* scatter */
     if(0 == m) {
@@ -1190,7 +1194,7 @@ static void p_counting_sort_hybrid3(sptensor_t * const tt, idx_t *cmplt)
     }
 
     if (0 == tid) {
-      //printf("\tscatter takes %f\n", omp_get_wtime() - t);
+      //printf("\t[%d] scatter takes %f\n", tid, omp_get_wtime() - t);
     }
   } /* omp parallel */
 
@@ -1468,6 +1472,22 @@ void tt_sort(
 }
 
 
+int tt_is_sorted(
+  const sptensor_t * const tt, idx_t * cmplt,
+  idx_t const start, idx_t const end)
+{
+  idx_t cnt_unsorted = 0;
+#pragma omp parallel for reduction(+:cnt_unsorted)
+  for(idx_t i=0; i < tt->nnz - 1; ++i) {
+    if(p_ttcmp(tt, cmplt, i, i + 1) > 0) {
+      assert(0);
+      ++cnt_unsorted;
+    }
+  }
+  return cnt_unsorted == 0;
+}
+
+
 void tt_sort_range(
   sptensor_t * const tt,
   idx_t const mode,
@@ -1486,7 +1506,7 @@ void tt_sort_range(
     cmplt = dim_perm;
   }
 
-  double t;
+  double t = omp_get_wtime();
 
   timer_start(&timers[TIMER_SORT]);
   switch(tt->type) {
