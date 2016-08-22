@@ -127,6 +127,8 @@ void tt_free(
 double tt_density(
   sptensor_t const * const tt);
 
+void tt_print_hist(sptensor_t const * const tt, int mode);
+
 #define tt_remove_dups splatt_tt_remove_dups
 /**
 * @brief Remove the duplicate entries of a tensor. Duplicate values are

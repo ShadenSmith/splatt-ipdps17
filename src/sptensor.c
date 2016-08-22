@@ -72,6 +72,28 @@ double tt_density(
 }
 
 
+void tt_print_hist(sptensor_t const * const tt, int mode)
+{
+  int *hist = (int *)splatt_malloc(tt->dims[mode]*sizeof(int));
+#pragma omp parallel for
+  for(idx_t n=0; n < tt->dims[mode]; ++n) {
+    hist[n] = 0;
+  }
+//#pragma omp parallel for
+  idx_t n;
+  for(n=0; n < tt->nnz; ++n) {
+//#pragma omp atomic
+    hist[tt->ind[mode][n]]++;
+  }
+  for(idx_t n=0; n < tt->dims[mode]; ++n) {
+    if(hist[n] > 0) {
+      printf("%ld %d\n", n, hist[n]);
+    }
+  }
+  splatt_free(hist);
+}
+
+
 idx_t * tt_get_slices(
   sptensor_t const * const tt,
   idx_t const m,
