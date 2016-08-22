@@ -1067,10 +1067,15 @@ static void p_csf_mttkrp_internal3_kernel_(
     } // TILED
     else {
       if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
+#ifdef __AVX512F__
+        _mm512_store_pd(ov, _mm512_fmadd_pd(accumF_v1, _mm512_load_pd(rv), _mm512_load_pd(ov)));
+        _mm512_store_pd(ov + 8, _mm512_fmadd_pd(accumF_v2, _mm512_load_pd(rv + 8), _mm512_load_pd(ov + 8)));
+#else
         _mm256_store_pd(ov, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(ov)));
         _mm256_store_pd(ov + 4, _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(rv + 4), _mm256_load_pd(ov + 4)));
         _mm256_store_pd(ov + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(ov + 8)));
         _mm256_store_pd(ov + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(ov + 12)));
+#endif
         _xend();
         continue;
       }
@@ -1442,10 +1447,15 @@ static void p_csf_mttkrp_leaf3_kernel_(
       }
       else {
         if(SPLATT_SYNC_RTM == SYNC_TYPE && _xbegin() == _XBEGIN_STARTED) {
+#ifdef __AVX512F__
+          _mm512_store_pd(ov, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v1, _mm512_load_pd(ov)));
+          _mm512_store_pd(ov + 8, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v2, _mm512_load_pd(ov + 8)));
+#else
           _mm256_store_pd(ov, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v1, _mm256_load_pd(ov)));
           _mm256_store_pd(ov + 4, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v2, _mm256_load_pd(ov + 4)));
           _mm256_store_pd(ov + 8, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v3, _mm256_load_pd(ov + 8)));
           _mm256_store_pd(ov + 12, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v4, _mm256_load_pd(ov + 12)));
+#endif
           _xend();
           continue;
         }
