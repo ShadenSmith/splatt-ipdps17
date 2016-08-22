@@ -8,7 +8,7 @@ void * splatt_malloc(
   void * ptr;
   int ret = posix_memalign(&ptr, 4096, bytes);
   if(ret != 0) {
-    fprintf(stderr, "SPALTT: posix_memalign() returned %d.\n", ret);
+    fprintf(stderr, "SPLATT: posix_memalign() returned %d.\n", ret);
     assert(0);
   }
   if(ptr == NULL) {
