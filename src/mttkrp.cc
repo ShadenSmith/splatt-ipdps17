@@ -16,12 +16,7 @@
 #define SPLATT_INTRINSIC // use intrinsic
 #endif
 #include <unistd.h>
-//#define SPLATT_SIM_CACHE
-#ifdef SPLATT_SIM_CACHE
-#include "gathertool.h"
-#endif
 
-#define SPLATT_NFACTOR_COMPILE_CONSTANT
 //#define SPLATT_EMULATE_VECTOR_CAS
 
 #define NLOCKS 1024
@@ -604,10 +599,6 @@ static void p_csf_mttkrp_root3_kernel_(
     idx_t const jjfirst  = fptr[f];
     val_t const vfirst   = vals[jjfirst];
     val_t const * const restrict bv = bvals + (inds[jjfirst] * NFACTORS);
-#ifdef SPLATT_SIM_CACHE
-    Load(vals + jjfirst);
-    Load(inds + jjfirst);
-#endif
 #ifdef SPLATT_INTRINSIC
 #ifdef __AVX512F__
     __m512d accumF_v1 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv));
@@ -649,26 +640,18 @@ static void p_csf_mttkrp_root3_kernel_(
     accumO_v4 = _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(av + 12), accumO_v4);
 #endif
 #else // SPLATT_INTRINSIC
+    __assume_aligned(accumF, 64);
+    __assume_aligned(bv, 64);
     for(idx_t r=0; r < NFACTORS; ++r) {
       accumF[r] = vfirst * bv[r];
-#ifdef SPLATT_SIM_CACHE
-      Load(bv + r);
-#endif
     }
 
     /* foreach nnz in fiber */
     for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
       val_t const v = vals[jj];
       val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
-#ifdef SPLATT_SIM_CACHE
-      Load(vals + jj);
-      Load(inds + jj);
-#endif
       for(idx_t r=0; r < NFACTORS; ++r) {
         accumF[r] += v * bv[r];
-#ifdef SPLATT_SIM_CACHE
-        Load(bv + r);
-#endif
       }
     }
 
@@ -676,9 +659,6 @@ static void p_csf_mttkrp_root3_kernel_(
     val_t const * const restrict av = avals  + (fids[f] * NFACTORS);
     for(idx_t r=0; r < NFACTORS; ++r) {
       accumO[r] += accumF[r] * av[r];
-#ifdef SPLATT_SIM_CACHE
-      Load(av + r);
-#endif
     }
 #endif // SPLATT_INTRINSIC
   }
@@ -697,9 +677,6 @@ static void p_csf_mttkrp_root3_kernel_(
 #pragma vector nontemporal(mv)
   for(idx_t r=0; r < NFACTORS; ++r) {
     mv[r] = accumO[r];
-#ifdef SPLATT_SIM_CACHE
-    Load(mv + r);
-#endif
   }
 #endif
 }
@@ -732,7 +709,6 @@ static void p_csf_mttkrp_root_tiled3(
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
-#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nfactors == 16) {
     for(idx_t s=0; s < nslices; ++s) {
       idx_t const fid = (sids == NULL) ? s : sids[s];
@@ -744,7 +720,6 @@ static void p_csf_mttkrp_root_tiled3(
     }
   }
   else
-#endif
   {
     for(idx_t s=0; s < nslices; ++s) {
       idx_t const fid = (sids == NULL) ? s : sids[s];
@@ -813,24 +788,6 @@ static void p_csf_mttkrp_root3_(
 
   val_t * const restrict accumF = (val_t *) thds[tid].scratch[0];
   val_t * const restrict accumO = (val_t *) thds[tid].scratch[2];
-
-#ifdef SPLATT_SIM_CACHE
-  static int simulation_cnt = 0;
-#pragma omp barrier
-#pragma omp master
-  if (simulation_cnt < 3) {
-    simulateCache = true;
-    for (int i = 0; i < nthreads; ++i) {
-      tidsToSimulate.push_back(i);
-    }
-    RegisterRegion((void *)avals, (void *)(avals + ct->dims[ct->dim_perm[1]]*NFACTORS), "avals");
-    RegisterRegion((void *)bvals, (void *)(bvals + ct->dims[ct->dim_perm[2]]*NFACTORS), "bvals");
-    RegisterRegion((void *)vals, (void *)(vals + ct->nnz), "vals");
-    RegisterRegion((void *)inds, (void *)(inds + ct->nnz), "inds");
-    Reset();
-  }
-#pragma omp barrier
-#endif
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
@@ -926,17 +883,6 @@ static void p_csf_mttkrp_root3_(
     printf("%f load imbalance = %f\n", tEnd - tBegin, barrierTimeSum/(tEnd - tBegin)/nthreads);
   }
 #endif // SPLATT_MEASURE_LOAD_BALANCE
-#ifdef SPLATT_SIM_CACHE
-#pragma omp barrier
-#pragma omp master
-  if (simulation_cnt < 3) {
-    Analyze();
-    simulateCache = false;
-    ++simulation_cnt;
-    ClearRegions();
-  }
-#pragma omp barrier
-#endif
 }
 
 static void p_csf_mttkrp_root3(
@@ -948,12 +894,10 @@ static void p_csf_mttkrp_root3(
   assert(ct->nmodes == 3);
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
-#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nfactors == 16) {
     p_csf_mttkrp_root3_<16>(ct, tile_id, mats, thds);
   }
   else
-#endif
   {
     val_t const * const vals = ct->pt[tile_id].vals;
 
@@ -1342,12 +1286,10 @@ static void p_csf_mttkrp_internal3(
   assert(ct->nmodes == 3);
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
-#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nfactors == 16) {
     p_csf_mttkrp_internal3_<16, SYNC_TYPE>(ct, tile_id, mats, thds);
   }
   else
-#endif
   {
     val_t const * const vals = ct->pt[tile_id].vals;
 
@@ -1730,12 +1672,10 @@ static void p_csf_mttkrp_leaf3(
   val_t * const ovals = mats[MAX_NMODES]->vals;
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
-#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nfactors == 16) {
     p_csf_mttkrp_leaf3_<16, SYNC_TYPE>(ct, tile_id, mats, thds);
   }
   else
-#endif
   {
     val_t * const restrict accumF
         = (val_t *) thds[omp_get_thread_num()].scratch[0];
@@ -1964,7 +1904,6 @@ static void p_csf_mttkrp_leaf_tiled3(
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
-#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nfactors == 16) {
     for(idx_t s=0; s < nslices; ++s) {
       idx_t const fid = (sids == NULL) ? s : sids[s];
@@ -1977,7 +1916,6 @@ static void p_csf_mttkrp_leaf_tiled3(
     }
   }
   else
-#endif
   {
     for(idx_t s=0; s < nslices; ++s) {
       idx_t const fid = (sids == NULL) ? s : sids[s];
@@ -2431,7 +2369,6 @@ static void p_csf_mttkrp_internal_tiled3(
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
-#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nfactors == 16) {
     for(idx_t s=0; s < nslices; ++s) {
       idx_t const fid = (sids == NULL) ? s : sids[s];
@@ -2444,7 +2381,6 @@ static void p_csf_mttkrp_internal_tiled3(
     }
   }
   else
-#endif
   {
     for(idx_t s=0; s < nslices; ++s) {
       idx_t const fid = (sids == NULL) ? s : sids[s];
@@ -3177,9 +3113,7 @@ static void p_root_decide(
   timer_fstart(&time);
 
   matrix_t * const M = mats[MAX_NMODES];
-#ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nmodes != 3 || tensor->which_tile != SPLATT_NOTILE || M->J != 16)
-#endif
     par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
 #ifdef SPLATT_COUNT_FLOP
