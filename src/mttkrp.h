@@ -85,6 +85,12 @@ void mttkrp_stream(
   matrix_t ** mats,
   idx_t const mode);
 
+int mttkrp_use_privatization(
+  splatt_csf const * const tensor,
+  matrix_t **mats,
+  int mode,
+  double const * const opts);
+
 #ifdef __cplusplus
 }
 #endif

@@ -9,6 +9,7 @@
 #include "util.h"
 #include <limits.h>
 #include <omp.h>
+#include <time.h>
 #include <algorithm>
 #ifdef __INTEL_COMPILER
 #include <immintrin.h>
@@ -21,70 +22,78 @@
 #endif
 
 #define SPLATT_NFACTOR_COMPILE_CONSTANT
-#ifndef __AVX512F__ // RTM and ATOMIC_CACHE not yet implemented for AVX512
-//#define SPLATT_RTM // use restricted transactional memory
-//#define SPLATT_ATOMIC_CACHE
-#endif
-//#define SPLATT_CAS
 //#define SPLATT_EMULATE_VECTOR_CAS
 
 #define NLOCKS 1024
 static int locks_initialized = 0;
 
-#ifdef SPLATT_ATOMIC_CACHE
-#define NBUCKETS 65536
-#endif
-
-//#define SPLATT_NO_LOCK
-//#define SPLATT_MY_TTAS_LOCK
 #define SPLATT_LOCK_PAD (8)
-#ifdef SPLATT_MY_TTAS_LOCK
-static volatile long locks[NLOCKS*SPLATT_LOCK_PAD];
-#elif !defined(SPLATT_NO_LOCK)
-static omp_lock_t locks[NLOCKS*SPLATT_LOCK_PAD];
-#endif
+static volatile long ttas_locks[NLOCKS*SPLATT_LOCK_PAD];
+static omp_lock_t omp_locks[NLOCKS*SPLATT_LOCK_PAD];
 
 //#define SPLATT_COUNT_FLOP
 #ifdef SPLATT_COUNT_FLOP
 static long mttkrp_flops = 0;
 #endif
 
+//#define SPLATT_COUNT_REDUCTION
+#ifdef SPLATT_COUNT_REDUCTION
+static long mttkrp_reduction = 0;
+#endif
+
 static void p_init_locks()
 {
   if (!locks_initialized) {
     for(int i=0; i < NLOCKS; ++i) {
-#ifdef SPLATT_MY_TTAS_LOCK
-      locks[i*SPLATT_LOCK_PAD] = 0;
-#elif !defined(SPLATT_NO_LOCK)
-      omp_init_lock(locks+i*SPLATT_LOCK_PAD);
-#endif
+      ttas_locks[i*SPLATT_LOCK_PAD] = 0;
+      omp_init_lock(omp_locks+i*SPLATT_LOCK_PAD);
     }
     locks_initialized = 1;
   }
 }
 
+timespec req = { 0, 1000 };
+
+
+template<splatt_sync_type SYNC_TYPE>
 static inline void splatt_set_lock(int id)
 {
   int i = (id%NLOCKS)*SPLATT_LOCK_PAD;
-#ifdef SPLATT_MY_TTAS_LOCK
-  //while (0 != locks[i] || 0 != __sync_lock_test_and_set(locks + i, 0xff)); // TTAS
-  while (0 != __sync_lock_test_and_set(locks + i, 1)) { _mm_pause(); }; // TAS with backoff
-#elif !defined(SPLATT_NO_LOCK)
-  omp_set_lock(locks + i);
-#endif
+  if(SPLATT_SYNC_TTAS == SYNC_TYPE) {
+    //while (0 != ttas_locks[i] || 0 != __sync_lock_test_and_set(ttas_locks + i, 0xff)); // TTAS
+    while (0 != ttas_locks[i] || 0 != __sync_lock_test_and_set(ttas_locks + i, 1)) { _mm_pause(); }; // TAS with backoff
+    //while (0 != ttas_locks[i] || 0 != __sync_lock_test_and_set(ttas_locks + i, 1)) { nanosleep(&req, NULL); }; // TAS with backoff
+    /*while (true) {
+      while (ttas_locks[i]) _mm_pause();
+      if (0 == __sync_lock_test_and_set(ttas_locks + i, 1)) break;
+      else {
+        for (int i = 0; i < 512; ++i) {
+          _mm_pause();
+        }
+      }
+    }*/
+  }
+  else if(SPLATT_SYNC_NOSYNC != SYNC_TYPE) {
+    omp_set_lock(omp_locks + i);
+  }
 }
 
+
+template<splatt_sync_type SYNC_TYPE>
 static inline void splatt_unset_lock(int id)
 {
   int i = (id%NLOCKS)*SPLATT_LOCK_PAD;
-#ifdef SPLATT_MY_TTAS_LOCK
-  locks[i] = 0;
-  asm volatile("" ::: "memory");
-  //__sync_lock_release(locks + i); // icc generates mfence instruction for this
-#elif !defined(SPLATT_NO_LOCK)
-  omp_unset_lock(locks + i);
-#endif
+  if(SPLATT_SYNC_TTAS == SYNC_TYPE) {
+    ttas_locks[i] = 0;
+    asm volatile("" ::: "memory");
+    //__sync_lock_release(ttas_locks + i); // icc generates mfence instruction for this
+  }
+  else if(SPLATT_SYNC_NOSYNC != SYNC_TYPE) {
+    omp_unset_lock(omp_locks + i);
+  }
 }
+
+
 
 /******************************************************************************
  * API FUNCTIONS
@@ -172,6 +181,7 @@ static inline void p_add_hada_clear_(
   val_t * const restrict a,
   val_t const * const restrict b)
 {
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
   __assume_aligned(out, 64);
   __assume_aligned(a, 64);
   __assume_aligned(b, 64);
@@ -204,6 +214,7 @@ static inline void p_assign_hada_(
   val_t const * const restrict a,
   val_t const * const restrict b)
 {
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
   __assume_aligned(out, 64);
   __assume_aligned(a, 64);
   __assume_aligned(b, 64);
@@ -217,6 +228,7 @@ static inline void p_assign_hada_(
 }
 
 
+template<splatt_sync_type SYNC_TYPE>
 static inline void p_csf_process_fiber_lock(
   val_t * const leafmat,
   val_t const * const restrict accumbuf,
@@ -229,16 +241,16 @@ static inline void p_csf_process_fiber_lock(
   for(idx_t jj=start; jj < end; ++jj) {
     val_t * const restrict leafrow = leafmat + (inds[jj] * nfactors);
     val_t const v = vals[jj];
-#ifdef SPLATT_RTM
-    if(_XBEGIN_STARTED == _xbegin()) {
+
+    if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
       for(idx_t f=0; f < nfactors; ++f) {
         leafrow[f] += v * accumbuf[f];
       }
+      _xend();
+      continue;
     }
-    else
-#endif
-    {
-#ifdef SPLATT_CAS
+
+    if(SPLATT_SYNC_CAS == SYNC_TYPE) {
       for(idx_t f=0; f < nfactors; ++f) {
         double old_leafrow, new_leafrow;
         do {
@@ -246,19 +258,19 @@ static inline void p_csf_process_fiber_lock(
           new_leafrow = old_leafrow + v * accumbuf[f];
         } while (!__sync_bool_compare_and_swap((long long *)(leafrow + f), *((long long *)(&old_leafrow)), *((long long *)(&new_leafrow))));
       }
-#else
-      splatt_set_lock(inds[jj]);
+    }
+    else {
+      splatt_set_lock<SYNC_TYPE>(inds[jj]);
       for(idx_t f=0; f < nfactors; ++f) {
         leafrow[f] += v * accumbuf[f];
       }
-      splatt_unset_lock(inds[jj]);
-#endif
+      splatt_unset_lock<SYNC_TYPE>(inds[jj]);
     }
   }
 }
 
 
-template<int NFACTORS>
+template<int NFACTORS, splatt_sync_type SYNC_TYPE>
 static inline void p_csf_process_fiber_lock_(
   val_t * const leafmat,
   val_t const * const restrict accumbuf,
@@ -267,21 +279,22 @@ static inline void p_csf_process_fiber_lock_(
   fidx_t const * const restrict inds,
   val_t const * const restrict vals)
 {
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
   __assume_aligned(accumbuf, 64);
   for(idx_t jj=start; jj < end; ++jj) {
     val_t * const restrict leafrow = leafmat + (inds[jj] * NFACTORS);
     __assume_aligned(leafrow, 64);
     val_t const v = vals[jj];
-#ifdef SPLATT_RTM
-    if(_XBEGIN_STARTED == _xbegin()) {
+
+    if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
       for(idx_t f=0; f < NFACTORS; ++f) {
         leafrow[f] += v * accumbuf[f];
       }
+      _xend();
+      continue;
     }
-    else
-#endif
-    {
-#ifdef SPLATT_CAS
+
+    if(SPLATT_SYNC_CAS == SYNC_TYPE) {
       for(idx_t f=0; f < NFACTORS; ++f) {
         double old_leafrow, new_leafrow;
         do {
@@ -289,13 +302,13 @@ static inline void p_csf_process_fiber_lock_(
           new_leafrow = old_leafrow + v * accumbuf[f];
         } while (!__sync_bool_compare_and_swap((long long *)(leafrow + f), *((long long *)(&old_leafrow)), *((long long *)(&new_leafrow))));
       }
-#else
-      splatt_set_lock(inds[jj]);
+    }
+    else {
+      splatt_set_lock<SYNC_TYPE>(inds[jj]);
       for(idx_t f=0; f < NFACTORS; ++f) {
         leafrow[f] += v * accumbuf[f];
       }
-      splatt_unset_lock(inds[jj]);
-#endif
+      splatt_unset_lock<SYNC_TYPE>(inds[jj]);
     }
   }
 #ifdef SPLATT_COUNT_FLOP
@@ -333,6 +346,7 @@ static inline void p_csf_process_fiber_nolock_(
   fidx_t const * const restrict inds,
   val_t const * const restrict vals)
 {
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
   __assume_aligned(accumbuf, 64);
   for(idx_t jj=start; jj < end; ++jj) {
     val_t * const restrict leafrow = leafmat + (inds[jj] * NFACTORS);
@@ -378,6 +392,7 @@ static inline void p_csf_process_fiber_(
   fidx_t const * const inds,
   val_t const * const vals)
 {
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
   /* foreach nnz in fiber */
   for(idx_t j=start; j < end; ++j) {
     val_t const v = vals[j] ;
@@ -474,6 +489,8 @@ static inline void p_propagate_up_(
   val_t ** mvals,
   idx_t const nmodes)
 {
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
+
   /* push initial idx initialize idxstack */
   idxstack[init_depth] = init_idx;
   for(idx_t m=init_depth+1; m < nmodes; ++m) {
@@ -540,6 +557,8 @@ static void p_csf_mttkrp_root3_kernel_(
   val_t *accumF, val_t *accumO,
   idx_t s)
 {
+  assert(NFACTORS == 16 && sizeof(val_t) == 8);
+
 #ifdef SPLATT_INTRINSIC
 #ifdef __AVX512F__
   __m512d accumO_v1, accumO_v2;
@@ -763,6 +782,7 @@ static void p_csf_mttkrp_root_tiled3(
 
 //#define SPLATT_MEASURE_LOAD_BALANCE
 #ifdef SPLATT_MEASURE_LOAD_BALANCE
+#include "SpMP/Utils.hpp"
 double barrierTimes[1024];
 #endif
 
@@ -773,6 +793,8 @@ static void p_csf_mttkrp_root3_(
   matrix_t ** mats,
   thd_info * const thds)
 {
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
+
   val_t const * const vals = ct->pt[tile_id].vals;
 
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
@@ -819,6 +841,8 @@ static void p_csf_mttkrp_root3_(
 
   if (sids == NULL) {
     // When we're working on all slices, use static schedule
+#define SPLATT_USE_STATIC_SCHEDULE
+#ifdef SPLATT_USE_STATIC_SCHEDULE
     int nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
     int count = nslices;
     int first = 0;
@@ -844,6 +868,15 @@ static void p_csf_mttkrp_root3_(
       else count = step;
     }
     int s_end = tid == nthreads - 1 ? nslices : first;
+    //printf("[%d] %ld-%ld %ld\n", tid, s_begin, s_end, fptr[sptr[s_end]] - fptr[sptr[s_begin]]);
+    /*if(8 == tid && s_begin == 841960) {
+      for (int s=s_begin; s < s_end; ++s) {
+        idx_t cnt = fptr[sptr[s + 1]] - fptr[sptr[s]];
+        if(cnt > 100) {
+          printf("%d %ld\n", s, cnt);
+        }
+      }
+    }*/
 
     for(idx_t s=s_begin; s < s_end; ++s) {
       idx_t fid = s;
@@ -851,6 +884,15 @@ static void p_csf_mttkrp_root3_(
       p_csf_mttkrp_root3_kernel_<NFACTORS>(
         vals, sptr, fptr, fids, inds, avals, bvals, mv, accumF, accumO, s);
     }
+#else
+    #pragma omp for schedule(dynamic, 16) nowait
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t fid = s;
+      val_t *mv = ovals + (fid * NFACTORS);
+      p_csf_mttkrp_root3_kernel_<NFACTORS>(
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, accumF, accumO, s);
+    }
+#endif
   }
   else {
     idx_t const nrows = mats[MAX_NMODES]->I;
@@ -871,7 +913,7 @@ static void p_csf_mttkrp_root3_(
 #ifdef SPLATT_MEASURE_LOAD_BALANCE
   double t = omp_get_wtime();
 #pragma omp barrier
-  barrierTimes[tid] = omp_get_wtime() - t;
+  barrierTimes[tid*8] = omp_get_wtime() - t;
 
 #pragma omp barrier
 #pragma omp master
@@ -879,7 +921,7 @@ static void p_csf_mttkrp_root3_(
     double tEnd = omp_get_wtime();
     double barrierTimeSum = 0;
     for (int i = 0; i < nthreads; ++i) {
-      barrierTimeSum += barrierTimes[i];
+      barrierTimeSum += barrierTimes[i*8];
     }
     printf("%f load imbalance = %f\n", tEnd - tBegin, barrierTimeSum/(tEnd - tBegin)/nthreads);
   }
@@ -965,14 +1007,8 @@ static void p_csf_mttkrp_root3(
   }
 }
 
-#ifdef SPLATT_ATOMIC_CACHE
-int hit_cnts[256];
-int miss_cnts[256];
-int global_atomic_cache_keys[32*NBUCKETS];
-__declspec(aligned(64)) val_t global_atomic_cache_values[32*NBUCKETS*16];
-#endif
 
-template<int NFACTORS, bool TILED = false>
+template<int NFACTORS, splatt_sync_type SYNC_TYPE, bool TILED = false>
 static void p_csf_mttkrp_internal3_kernel_(
   const val_t *vals,
   const idx_t *sptr, const idx_t *fptr,
@@ -981,6 +1017,8 @@ static void p_csf_mttkrp_internal3_kernel_(
   val_t *accumF,
   idx_t s)
 {
+  assert(NFACTORS == 16 && sizeof(val_t) == 8);
+
   /* foreach fiber in slice */
   for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
     /* first entry of the fiber is used to initialize accumF */
@@ -1028,50 +1066,16 @@ static void p_csf_mttkrp_internal3_kernel_(
 #endif
     } // TILED
     else {
-#ifdef SPLATT_RTM
-      if (_xbegin() == _XBEGIN_STARTED) {
+      if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
         _mm256_store_pd(ov, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(ov)));
         _mm256_store_pd(ov + 4, _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(rv + 4), _mm256_load_pd(ov + 4)));
         _mm256_store_pd(ov + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(ov + 8)));
         _mm256_store_pd(ov + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(ov + 12)));
         _xend();
+        continue;
       }
-      else
-#endif
-      {
-#ifdef SPLATT_ATOMIC_CACHE
-        int bucket_id = oid%NBUCKETS;
-        val_t *bucket_v = atomic_cache_values + bucket_id*NFACTORS;
-        int key = atomic_cache_keys[bucket_id];
 
-        if (key == oid) {
-          _mm256_store_pd(bucket_v, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(bucket_v)));
-          _mm256_store_pd(bucket_v + 4, _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(rv + 4), _mm256_load_pd(bucket_v + 4)));
-          _mm256_store_pd(bucket_v + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(bucket_v + 8)));
-          _mm256_store_pd(bucket_v + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(bucket_v + 12)));
-
-          //++hit_cnt;
-        }
-        else {
-          if (key != -1) {
-            val_t *ov2 = ovals + (key * NFACTORS);
-            splatt_set_lock(key);
-            _mm256_store_pd(ov2, _mm256_add_pd(_mm256_load_pd(ov2), _mm256_load_pd(bucket_v)));
-            _mm256_store_pd(ov2 + 4, _mm256_add_pd(_mm256_load_pd(ov2 + 4), _mm256_load_pd(bucket_v + 4)));
-            _mm256_store_pd(ov2 + 8, _mm256_add_pd(_mm256_load_pd(ov2 + 8), _mm256_load_pd(bucket_v + 8)));
-            _mm256_store_pd(ov2 + 12, _mm256_add_pd(_mm256_load_pd(ov2 + 12), _mm256_load_pd(bucket_v + 12)));
-            splatt_unset_lock(key);
-          }
-
-          _mm256_store_pd(bucket_v, _mm256_mul_pd(accumF_v1, _mm256_load_pd(rv)));
-          _mm256_store_pd(bucket_v + 4, _mm256_mul_pd(accumF_v2, _mm256_load_pd(rv + 4)));
-          _mm256_store_pd(bucket_v + 8, _mm256_mul_pd(accumF_v3, _mm256_load_pd(rv + 8)));
-          _mm256_store_pd(bucket_v + 12, _mm256_mul_pd(accumF_v4, _mm256_load_pd(rv + 12)));
-          atomic_cache_keys[bucket_id] = oid;
-
-          //++miss_cnt;
-        }
-#elif defined(SPLATT_CAS)
+      if(SPLATT_SYNC_CAS == SYNC_TYPE) {
         __m128d old_ov, new_ov, acc;
 
         do {
@@ -1153,8 +1157,9 @@ static void p_csf_mttkrp_internal3_kernel_(
           new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 14), acc, old_ov);
         } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 14), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
 #endif
-#else // !SPLATT_CAS
-        splatt_set_lock(oid);
+      } // SPLATT_SYNC_CAS
+      else {
+        splatt_set_lock<SYNC_TYPE>(oid);
 #ifdef __AVX512F__
         _mm512_store_pd(ov, _mm512_fmadd_pd(accumF_v1, _mm512_load_pd(rv), _mm512_load_pd(ov)));
         _mm512_store_pd(ov + 8, _mm512_fmadd_pd(accumF_v2, _mm512_load_pd(rv + 8), _mm512_load_pd(ov + 8)));
@@ -1164,8 +1169,7 @@ static void p_csf_mttkrp_internal3_kernel_(
         _mm256_store_pd(ov + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(ov + 8)));
         _mm256_store_pd(ov + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(ov + 12)));
 #endif
-        splatt_unset_lock(oid);
-#endif // !SPLATT_CAS
+        splatt_unset_lock<SYNC_TYPE>(oid);
       }
     } // !TILED
 #else // SPLATT_INTRINSIC
@@ -1190,17 +1194,15 @@ static void p_csf_mttkrp_internal3_kernel_(
       }
     } // TILED
     else {
-#ifdef SPLATT_RTM
-      if (_xbegin() == _XBEGIN_STARTED) {
+      if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
         for(idx_t r=0; r < NFACTORS; ++r) {
           ov[r] += rv[r] * accumF[r];
         }
         _xend();
+        continue;
       }
-      else
-#endif
-      {
-#ifdef SPLATT_CAS
+
+      if(SPLATT_SYNC_CAS == SYNC_TYPE) {
         for(idx_t r=0; r < NFACTORS; ++r) {
           double old_ov, new_ov;
           do {
@@ -1208,26 +1210,28 @@ static void p_csf_mttkrp_internal3_kernel_(
             new_ov = old_ov + rv[r]*accumF[r];
           } while (!__sync_bool_compare_and_swap((long long *)(ov + r), *((long long *)(&old_ov)), *((long long *)(&new_ov))));
         }
-#else
-        splatt_set_lock(fids[f]);
+      }
+      else {
+        splatt_set_lock<SYNC_TYPE>(fids[f]);
         for(idx_t r=0; r < NFACTORS; ++r) {
           ov[r] += rv[r] * accumF[r];
         }
-        splatt_unset_lock(fids[f]);
-#endif
+        splatt_unset_lock<SYNC_TYPE>(fids[f]);
       }
     } // !TILED
 #endif // SPLATT_INTRINSIC
-  }
+  } /* for each slice */
 }
 
-template<int NFACTORS>
+template<int NFACTORS, splatt_sync_type SYNC_TYPE>
 static void p_csf_mttkrp_internal3_(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
   thd_info * const thds)
 {
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
+
   val_t const * const vals = ct->pt[tile_id].vals;
 
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
@@ -1247,15 +1251,6 @@ static void p_csf_mttkrp_internal3_(
   val_t * const restrict accumF = (val_t *) thds[tid].scratch[0];
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
-
-#ifdef SPLATT_ATOMIC_CACHE
-  int *atomic_cache_keys = global_atomic_cache_keys + tid*NBUCKETS;
-  val_t *atomic_cache_values = global_atomic_cache_values + tid*NBUCKETS*NFACTORS;
-  for (int i = 0; i < NBUCKETS; ++i) {
-    atomic_cache_keys[i] = -1;
-  }
-  int hit_cnt = 0, miss_cnt = 0;
-#endif
 
 #ifdef SPLATT_MEASURE_LOAD_BALANCE
 #pragma omp barrier
@@ -1296,7 +1291,7 @@ static void p_csf_mttkrp_internal3_(
       /* root row */
       val_t const * const restrict rv = avals + (fid * NFACTORS);
 
-      p_csf_mttkrp_internal3_kernel_<NFACTORS>(
+      p_csf_mttkrp_internal3_kernel_<NFACTORS, SYNC_TYPE>(
         vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
     }
   }
@@ -1308,32 +1303,15 @@ static void p_csf_mttkrp_internal3_(
       /* root row */
       val_t const * const restrict rv = avals + (fid * NFACTORS);
 
-      p_csf_mttkrp_internal3_kernel_<NFACTORS>(
+      p_csf_mttkrp_internal3_kernel_<NFACTORS, SYNC_TYPE>(
         vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
     }
   }
 
-#ifdef SPLATT_ATOMIC_CACHE
-  for (int bucket_id = 0; bucket_id < NBUCKETS; ++bucket_id) {
-    int key = atomic_cache_keys[bucket_id];
-    if (key != -1) {
-      val_t * const restrict ov = ovals  + (key * NFACTORS);
-      val_t *bucket_v = atomic_cache_values + bucket_id*NFACTORS;
-
-      splatt_set_lock(key);
-      _mm256_store_pd(ov, _mm256_add_pd(_mm256_load_pd(ov), _mm256_load_pd(bucket_v)));
-      _mm256_store_pd(ov + 4, _mm256_add_pd(_mm256_load_pd(ov + 4), _mm256_load_pd(bucket_v + 4)));
-      _mm256_store_pd(ov + 8, _mm256_add_pd(_mm256_load_pd(ov + 8), _mm256_load_pd(bucket_v + 8)));
-      _mm256_store_pd(ov + 12, _mm256_add_pd(_mm256_load_pd(ov + 12), _mm256_load_pd(bucket_v + 12)));
-      splatt_unset_lock(key);
-    }
-  }
-#endif
-
 #ifdef SPLATT_MEASURE_LOAD_BALANCE
   double t = omp_get_wtime();
 #pragma omp barrier
-  barrierTimes[tid] = omp_get_wtime() - t;
+  barrierTimes[tid*8] = omp_get_wtime() - t;
 
 #pragma omp barrier
 #pragma omp master
@@ -1341,29 +1319,15 @@ static void p_csf_mttkrp_internal3_(
     double tEnd = omp_get_wtime();
     double barrierTimeSum = 0;
     for (int i = 0; i < nthreads; ++i) {
-      barrierTimeSum += barrierTimes[i];
+      barrierTimeSum += barrierTimes[i*8];
     }
     printf("%f load imbalance = %f\n", tEnd - tBegin, barrierTimeSum/(tEnd - tBegin)/nthreads);
   }
 #endif // SPLATT_MEASURE_LOAD_BALANCE
-
-#ifdef SPLATT_ATOMIC_CACHE
-  hit_cnts[tid] = hit_cnt;
-  miss_cnts[tid] = miss_cnt;
-#pragma omp barrier
-#pragma omp master
-  {
-    hit_cnt = 0;
-    miss_cnt = 0;
-    for (int i = 0; i < nthreads; ++i) {
-      hit_cnt += hit_cnts[i];
-      miss_cnt += miss_cnts[i];
-    }
-    printf("hit = %d miss = %d hit-rate = %f\n", hit_cnt, miss_cnt, (double)hit_cnt/(hit_cnt + miss_cnt));
-  }
-#endif
 }
 
+
+template<splatt_sync_type SYNC_TYPE>
 static void p_csf_mttkrp_internal3(
   splatt_csf const * const ct,
   idx_t const tile_id,
@@ -1375,7 +1339,7 @@ static void p_csf_mttkrp_internal3(
 
 #ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nfactors == 16) {
-    p_csf_mttkrp_internal3_<16>(ct, tile_id, mats, thds);
+    p_csf_mttkrp_internal3_<16, SYNC_TYPE>(ct, tile_id, mats, thds);
   }
   else
 #endif
@@ -1425,17 +1389,17 @@ static void p_csf_mttkrp_internal3(
 
         /* write to fiber row */
         val_t * const restrict ov = ovals  + (fids[f] * nfactors);
-        splatt_set_lock(fids[f]);
+        splatt_set_lock<SYNC_TYPE>(fids[f]);
         for(idx_t r=0; r < nfactors; ++r) {
           ov[r] += rv[r] * accumF[r];
         }
-        splatt_unset_lock(fids[f]);
+        splatt_unset_lock<SYNC_TYPE>(fids[f]);
       }
     }
   }
 }
 
-template<int NFACTORS, bool TILED = false>
+template<int NFACTORS, splatt_sync_type SYNC_TYPE, bool TILED = false>
 static void p_csf_mttkrp_leaf3_kernel_(
   const val_t *vals,
   const idx_t *sptr, const idx_t *fptr,
@@ -1444,6 +1408,8 @@ static void p_csf_mttkrp_leaf3_kernel_(
   val_t *accumF,
   idx_t s)
 {
+  assert(NFACTORS == 16 && sizeof(val_t) == 8);
+
   /* foreach fiber in slice */
   for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
     /* fill fiber with hada */
@@ -1475,18 +1441,16 @@ static void p_csf_mttkrp_leaf3_kernel_(
 #endif
       }
       else {
-#ifdef SPLATT_RTM
-        if (_xbegin() == _XBEGIN_STARTED) {
+        if(SPLATT_SYNC_RTM == SYNC_TYPE && _xbegin() == _XBEGIN_STARTED) {
           _mm256_store_pd(ov, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v1, _mm256_load_pd(ov)));
           _mm256_store_pd(ov + 4, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v2, _mm256_load_pd(ov + 4)));
           _mm256_store_pd(ov + 8, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v3, _mm256_load_pd(ov + 8)));
           _mm256_store_pd(ov + 12, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v4, _mm256_load_pd(ov + 12)));
           _xend();
+          continue;
         }
-        else
-#endif
-        {
-#ifdef SPLATT_CAS
+
+        if(SPLATT_SYNC_CAS == SYNC_TYPE) {
           __m128d old_ov, new_ov, acc;
 
           do {
@@ -1568,8 +1532,9 @@ static void p_csf_mttkrp_leaf3_kernel_(
             new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
           } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 14), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
 #endif
-#else
-          splatt_set_lock(inds[jj]);
+        } /* SPLATT_SYNC_CAS */
+        else {
+          splatt_set_lock<SYNC_TYPE>(inds[jj]);
 #ifdef __AVX512F__
           _mm512_store_pd(ov, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v1, _mm512_load_pd(ov)));
           _mm512_store_pd(ov + 8, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v2, _mm512_load_pd(ov + 8)));
@@ -1579,11 +1544,10 @@ static void p_csf_mttkrp_leaf3_kernel_(
           _mm256_store_pd(ov + 8, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v3, _mm256_load_pd(ov + 8)));
           _mm256_store_pd(ov + 12, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v4, _mm256_load_pd(ov + 12)));
 #endif
-          splatt_unset_lock(inds[jj]);
-#endif
+          splatt_unset_lock<SYNC_TYPE>(inds[jj]);
         }
       } // !TILED
-    }
+    } /* for each fiber*/
 
 #else // SPLATT_INTRINSIC
     for(idx_t r=0; r < NFACTORS; ++r) {
@@ -1600,17 +1564,15 @@ static void p_csf_mttkrp_leaf3_kernel_(
         }
       }
       else {
-#ifdef SPLATT_RTM
-        if (_xbegin() == _XBEGIN_STARTED) {
+        if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
           for(idx_t r=0; r < NFACTORS; ++r) {
             ov[r] += v * accumF[r];
           }
           _xend();
+          continue;
         }
-        else
-#endif
-        {
-#ifdef SPLATT_CAS
+
+        if(SPLATT_SYNC_CAS == SYNC_TYPE) {
           for(idx_t r=0; r < NFACTORS; ++r) {
             double old_ov, new_ov;
             do {
@@ -1618,27 +1580,29 @@ static void p_csf_mttkrp_leaf3_kernel_(
               new_ov = old_ov + v*accumF[r];
             } while (!__sync_bool_compare_and_swap((long long *)(ov + r), *((long long *)(&old_ov)), *((long long *)(&new_ov))));
           }
-#else
-          splatt_set_lock(inds[jj]);
+        }
+        else {
+          splatt_set_lock<SYNC_TYPE>(inds[jj]);
           for(idx_t r=0; r < NFACTORS; ++r) {
             ov[r] += v * accumF[r];
           }
-          splatt_unset_lock(inds[jj]);
-#endif
+          splatt_unset_lock<SYNC_TYPE>(inds[jj]);
         }
       } // !TILED
-    }
+    } /* for each fiber */
 #endif // SPLATT_INTRINSIC
   }
 }
 
-template<int NFACTORS>
+template<int NFACTORS, splatt_sync_type SYNC_TYPE>
 static void p_csf_mttkrp_leaf3_(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
   thd_info * const thds)
 {
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
+
   val_t const * const vals = ct->pt[tile_id].vals;
 
   idx_t const * const restrict sptr = ct->pt[tile_id].fptr[0];
@@ -1698,7 +1662,7 @@ static void p_csf_mttkrp_leaf3_(
       /* root row */
       val_t const * const restrict rv = avals + (fid * NFACTORS);
 
-      p_csf_mttkrp_leaf3_kernel_<NFACTORS>(
+      p_csf_mttkrp_leaf3_kernel_<NFACTORS, SYNC_TYPE>(
         vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
     }
   }
@@ -1710,7 +1674,7 @@ static void p_csf_mttkrp_leaf3_(
       /* root row */
       val_t const * const restrict rv = avals + (fid * NFACTORS);
 
-      p_csf_mttkrp_leaf3_kernel_<NFACTORS>(
+      p_csf_mttkrp_leaf3_kernel_<NFACTORS, SYNC_TYPE>(
         vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
     }
   }
@@ -1718,7 +1682,7 @@ static void p_csf_mttkrp_leaf3_(
 #ifdef SPLATT_MEASURE_LOAD_BALANCE
   double t = omp_get_wtime();
 #pragma omp barrier
-  barrierTimes[tid] = omp_get_wtime() - t;
+  barrierTimes[tid*8] = omp_get_wtime() - t;
 
 #pragma omp barrier
 #pragma omp master
@@ -1726,7 +1690,7 @@ static void p_csf_mttkrp_leaf3_(
     double tEnd = omp_get_wtime();
     double barrierTimeSum = 0;
     for (int i = 0; i < nthreads; ++i) {
-      barrierTimeSum += barrierTimes[i];
+      barrierTimeSum += barrierTimes[i*8];
     }
     printf("%f load imbalance = %f\n", tEnd - tBegin, barrierTimeSum/(tEnd - tBegin)/nthreads);
   }
@@ -1734,6 +1698,7 @@ static void p_csf_mttkrp_leaf3_(
 }
 
 
+template<splatt_sync_type SYNC_TYPE>
 static void p_csf_mttkrp_leaf3(
   splatt_csf const * const ct,
   idx_t const tile_id,
@@ -1757,7 +1722,7 @@ static void p_csf_mttkrp_leaf3(
 
 #ifdef SPLATT_NFACTOR_COMPILE_CONSTANT
   if (nfactors == 16) {
-    p_csf_mttkrp_leaf3_<16>(ct, tile_id, mats, thds);
+    p_csf_mttkrp_leaf3_<16, SYNC_TYPE>(ct, tile_id, mats, thds);
   }
   else
 #endif
@@ -1785,11 +1750,11 @@ static void p_csf_mttkrp_leaf3(
         for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
           val_t const v = vals[jj];
           val_t * const restrict ov = ovals + (inds[jj] * nfactors);
-          splatt_set_lock(inds[jj]);
+          splatt_set_lock<SYNC_TYPE>(inds[jj]);
           for(idx_t r=0; r < nfactors; ++r) {
             ov[r] += v * accumF[r];
           }
-          splatt_unset_lock(inds[jj]);
+          splatt_unset_lock<SYNC_TYPE>(inds[jj]);
         }
       }
     }
@@ -1997,7 +1962,7 @@ static void p_csf_mttkrp_leaf_tiled3(
       /* root row */
       val_t const * const restrict rv = avals + (fid * nfactors);
 
-      p_csf_mttkrp_leaf3_kernel_<16, true>(
+      p_csf_mttkrp_leaf3_kernel_<16, SPLATT_SYNC_NOSYNC, true>(
         vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
     }
   }
@@ -2114,12 +2079,25 @@ static void p_csf_mttkrp_leaf_tiled(
 }
 
 
-template<int NFACTORS>
+int mttkrp_use_privatization(
+  splatt_csf const * const tensor,
+  matrix_t **mats,
+  int mode,
+  double const * const opts)
+{
+  return
+    mats[mode]->I*omp_get_max_threads() < tensor->nnz*opts[SPLATT_OPTION_PRIVATIZATION_THREASHOLD] &&
+    tensor->nmodes > 3; /* FIXME: this line is temporary because non-root mttkrp with privatization is only implemented for nmodes > 3*/
+}
+
+
+template<int NFACTORS, bool PARALLELIZE_EACH_TILE=false>
 static void p_csf_mttkrp_leaf_tiled_(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
-  thd_info * const thds)
+  thd_info * const thds,
+  double const * const opts)
 {
   val_t const * const vals = ct->pt[tile_id].vals;
   idx_t const nmodes = ct->nmodes;
@@ -2148,55 +2126,106 @@ static void p_csf_mttkrp_leaf_tiled_(
     /* grab the next row of buf from thds */
     buf[m] = ((val_t *) thds[tid].scratch[2]) + (NFACTORS * m);
   }
+  bool use_privatization = mttkrp_use_privatization(ct, mats, MAX_NMODES, opts);
+  val_t * const ovals = use_privatization && tid > 0 ? (val_t *)thds[tid].scratch[1] : mats[MAX_NMODES]->vals;
 
   /* foreach outer slice */
   idx_t const nouter = ct->pt[tile_id].nfibs[0];
-  for(idx_t s=0; s < nouter; ++s) {
-    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
-    idxstack[0] = s;
+  if(PARALLELIZE_EACH_TILE) {
+#pragma omp for schedule(dynamic, 16)
+    for(idx_t s=0; s < nouter; ++s) {
+      fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+      idxstack[0] = s;
 
-    /* clear out stale data */
-    for(idx_t m=1; m < nmodes-1; ++m) {
-      idxstack[m] = fp[m-1][idxstack[m-1]];
-    }
-
-    /* first buf will always just be a matrix row */
-    val_t const * const rootrow = mvals[0] + (fid*NFACTORS);
-    val_t * const rootbuf = buf[0];
-    __assume_aligned(rootrow, 64);
-    __assume_aligned(rootbuf, 64);
-    for(idx_t f=0; f < NFACTORS; ++f) {
-      rootbuf[f] = rootrow[f];
-    }
-
-    idx_t depth = 0;
-
-    idx_t const outer_end = fp[0][s+1];
-    while(idxstack[1] < outer_end) {
-      /* move down to an nnz node */
-      for(; depth < nmodes-2; ++depth) {
-        /* propogate buf down */
-        val_t const * const restrict drow
-            = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
-        p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
+      /* clear out stale data */
+      for(idx_t m=1; m < nmodes-1; ++m) {
+        idxstack[m] = fp[m-1][idxstack[m-1]];
       }
 
-      /* process all nonzeros [start, end) */
-      idx_t const start = fp[depth][idxstack[depth]];
-      idx_t const end   = fp[depth][idxstack[depth]+1];
-      p_csf_process_fiber_nolock_<NFACTORS>(mats[MAX_NMODES]->vals, buf[depth],
-          start, end, fids[depth+1], vals);
+      /* first buf will always just be a matrix row */
+      val_t const * const rootrow = mvals[0] + (fid*NFACTORS);
+      val_t * const rootbuf = buf[0];
+      __assume_aligned(rootrow, 64);
+      __assume_aligned(rootbuf, 64);
+      for(idx_t f=0; f < NFACTORS; ++f) {
+        rootbuf[f] = rootrow[f];
+      }
 
-      /* now move back up to the next unprocessed child */
-      do {
-        ++idxstack[depth];
-        --depth;
-      } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
-    } /* end DFS */
-  } /* end outer slice loop */
+      idx_t depth = 0;
+
+      idx_t const outer_end = fp[0][s+1];
+      while(idxstack[1] < outer_end) {
+        /* move down to an nnz node */
+        for(; depth < nmodes-2; ++depth) {
+          /* propogate buf down */
+          val_t const * const restrict drow
+              = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
+          p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
+        }
+
+        /* process all nonzeros [start, end) */
+        idx_t const start = fp[depth][idxstack[depth]];
+        idx_t const end   = fp[depth][idxstack[depth]+1];
+        p_csf_process_fiber_nolock_<NFACTORS>(ovals, buf[depth],
+            start, end, fids[depth+1], vals);
+
+        /* now move back up to the next unprocessed child */
+        do {
+          ++idxstack[depth];
+          --depth;
+        } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
+      } /* end DFS */
+    } /* end outer slice loop */
+  }
+  else {
+    for(idx_t s=0; s < nouter; ++s) {
+      fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+      idxstack[0] = s;
+
+      /* clear out stale data */
+      for(idx_t m=1; m < nmodes-1; ++m) {
+        idxstack[m] = fp[m-1][idxstack[m-1]];
+      }
+
+      /* first buf will always just be a matrix row */
+      val_t const * const rootrow = mvals[0] + (fid*NFACTORS);
+      val_t * const rootbuf = buf[0];
+      __assume_aligned(rootrow, 64);
+      __assume_aligned(rootbuf, 64);
+      for(idx_t f=0; f < NFACTORS; ++f) {
+        rootbuf[f] = rootrow[f];
+      }
+
+      idx_t depth = 0;
+
+      idx_t const outer_end = fp[0][s+1];
+      while(idxstack[1] < outer_end) {
+        /* move down to an nnz node */
+        for(; depth < nmodes-2; ++depth) {
+          /* propogate buf down */
+          val_t const * const restrict drow
+              = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
+          p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
+        }
+
+        /* process all nonzeros [start, end) */
+        idx_t const start = fp[depth][idxstack[depth]];
+        idx_t const end   = fp[depth][idxstack[depth]+1];
+        p_csf_process_fiber_nolock_<NFACTORS>(ovals, buf[depth],
+            start, end, fids[depth+1], vals);
+
+        /* now move back up to the next unprocessed child */
+        do {
+          ++idxstack[depth];
+          --depth;
+        } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
+      } /* end DFS */
+    } /* end outer slice loop */
+  }
 }
 
 
+template<splatt_sync_type SYNC_TYPE>
 static void p_csf_mttkrp_leaf(
   splatt_csf const * const ct,
   idx_t const tile_id,
@@ -2211,7 +2240,7 @@ static void p_csf_mttkrp_leaf(
     return;
   }
   if(nmodes == 3) {
-    p_csf_mttkrp_leaf3(ct, tile_id, mats, thds);
+    p_csf_mttkrp_leaf3<SYNC_TYPE>(ct, tile_id, mats, thds);
     return;
   }
 
@@ -2267,7 +2296,7 @@ static void p_csf_mttkrp_leaf(
       /* process all nonzeros [start, end) */
       idx_t const start = fp[depth][idxstack[depth]];
       idx_t const end   = fp[depth][idxstack[depth]+1];
-      p_csf_process_fiber_lock(mats[MAX_NMODES]->vals, buf[depth],
+      p_csf_process_fiber_lock<SYNC_TYPE>(mats[MAX_NMODES]->vals, buf[depth],
           nfactors, start, end, fids[depth+1], vals);
 
       /* now move back up to the next unprocessed child */
@@ -2280,13 +2309,15 @@ static void p_csf_mttkrp_leaf(
 }
 
 
-template<int NFACTORS>
+template<int NFACTORS, splatt_sync_type SYNC_TYPE>
 static void p_csf_mttkrp_leaf_(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
   thd_info * const thds)
 {
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
+
   /* extract tensor structures */
   val_t const * const vals = ct->pt[tile_id].vals;
   idx_t const nmodes = ct->nmodes;
@@ -2295,7 +2326,7 @@ static void p_csf_mttkrp_leaf_(
     return;
   }
   if(nmodes == 3) {
-    p_csf_mttkrp_leaf3(ct, tile_id, mats, thds);
+    p_csf_mttkrp_leaf3<SYNC_TYPE>(ct, tile_id, mats, thds);
     return;
   }
 
@@ -2351,7 +2382,7 @@ static void p_csf_mttkrp_leaf_(
       /* process all nonzeros [start, end) */
       idx_t const start = fp[depth][idxstack[depth]];
       idx_t const end   = fp[depth][idxstack[depth]+1];
-      p_csf_process_fiber_lock_<NFACTORS>(mats[MAX_NMODES]->vals, buf[depth],
+      p_csf_process_fiber_lock_<NFACTORS, SYNC_TYPE>(mats[MAX_NMODES]->vals, buf[depth],
           start, end, fids[depth+1], vals);
 
       /* now move back up to the next unprocessed child */
@@ -2398,7 +2429,7 @@ static void p_csf_mttkrp_internal_tiled3(
       /* root row */
       val_t const * const restrict rv = avals + (fid * nfactors);
 
-      p_csf_mttkrp_internal3_kernel_<16, true>(
+      p_csf_mttkrp_internal3_kernel_<16, SPLATT_SYNC_NOSYNC, true>(
         vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
     }
   }
@@ -2530,13 +2561,14 @@ static void p_csf_mttkrp_internal_tiled(
 }
 
 
-template<int NFACTORS>
+template<int NFACTORS, bool PARALLELIZE_EACH_TILE=false>
 static void p_csf_mttkrp_internal_tiled_(
   splatt_csf const * const ct,
   idx_t const tile_id,
   matrix_t ** mats,
   idx_t const mode,
-  thd_info * const thds)
+  thd_info * const thds,
+  double const * const opts)
 {
   /* extract tensor structures */
   idx_t const nmodes = ct->nmodes;
@@ -2569,56 +2601,107 @@ static void p_csf_mttkrp_internal_tiled_(
     buf[m] = ((val_t *) thds[tid].scratch[2]) + (NFACTORS * m);
     memset(buf[m], 0, NFACTORS * sizeof(val_t));
   }
-  val_t * const ovals = mats[MAX_NMODES]->vals;
+  bool use_privatization = mttkrp_use_privatization(ct, mats, MAX_NMODES, opts);
+  val_t * const ovals = use_privatization && tid > 0 ? (val_t *)thds[tid].scratch[1] : mats[MAX_NMODES]->vals;
 
   /* foreach outer slice */
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
-  for(idx_t s=0; s < nslices; ++s) {
-    fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+  if(PARALLELIZE_EACH_TILE) {
+#pragma omp for schedule(dynamic, 16)
+    for(idx_t s=0; s < nslices; ++s) {
+      fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
 
-    /* push outer slice and fill stack */
-    idxstack[0] = s;
-    for(idx_t m=1; m <= outdepth; ++m) {
-      idxstack[m] = fp[m-1][idxstack[m-1]];
-    }
-
-    /* fill first buf */
-    val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
-    __assume_aligned(buf[0], 64);
-    for(idx_t f=0; f < NFACTORS; ++f) {
-      buf[0][f] = rootrow[f];
-    }
-
-    /* process entire subtree */
-    idx_t depth = 0;
-    while(idxstack[1] < fp[0][s+1]) {
-      /* propagate values down to outdepth-1 */
-      for(; depth < outdepth; ++depth) {
-        val_t const * const restrict drow
-            = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
-        p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
+      /* push outer slice and fill stack */
+      idxstack[0] = s;
+      for(idx_t m=1; m <= outdepth; ++m) {
+        idxstack[m] = fp[m-1][idxstack[m-1]];
       }
 
-      /* write to output and clear buf[outdepth] for next subtree */
-      fidx_t const noderow = fids[outdepth][idxstack[outdepth]];
+      /* fill first buf */
+      val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
+      __assume_aligned(buf[0], 64);
+      for(idx_t f=0; f < NFACTORS; ++f) {
+        buf[0][f] = rootrow[f];
+      }
 
-      /* propagate value up to buf[outdepth] */
-      p_propagate_up_<NFACTORS>(buf[outdepth], buf, idxstack, outdepth,idxstack[outdepth],
-          fp, fids, vals, mvals, nmodes);
+      /* process entire subtree */
+      idx_t depth = 0;
+      while(idxstack[1] < fp[0][s+1]) {
+        /* propagate values down to outdepth-1 */
+        for(; depth < outdepth; ++depth) {
+          val_t const * const restrict drow
+              = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
+          p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
+        }
 
-      val_t * const restrict outbuf = ovals + (noderow * NFACTORS);
-      p_add_hada_clear_<NFACTORS>(outbuf, buf[outdepth], buf[outdepth-1]);
+        /* write to output and clear buf[outdepth] for next subtree */
+        fidx_t const noderow = fids[outdepth][idxstack[outdepth]];
 
-      /* backtrack to next unfinished node */
-      do {
-        ++idxstack[depth];
-        --depth;
-      } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
-    } /* end DFS */
-  } /* end foreach outer slice */
+        /* propagate value up to buf[outdepth] */
+        p_propagate_up_<NFACTORS>(buf[outdepth], buf, idxstack, outdepth,idxstack[outdepth],
+            fp, fids, vals, mvals, nmodes);
+
+        val_t * const restrict outbuf = ovals + (noderow * NFACTORS);
+        p_add_hada_clear_<NFACTORS>(outbuf, buf[outdepth], buf[outdepth-1]);
+
+        /* backtrack to next unfinished node */
+        do {
+          ++idxstack[depth];
+          --depth;
+        } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
+      } /* end DFS */
+    } /* end foreach outer slice */
+  }
+  else {
+    for(idx_t s=0; s < nslices; ++s) {
+      fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
+
+      /* push outer slice and fill stack */
+      idxstack[0] = s;
+      for(idx_t m=1; m <= outdepth; ++m) {
+        idxstack[m] = fp[m-1][idxstack[m-1]];
+      }
+
+      /* fill first buf */
+      val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
+      __assume_aligned(buf[0], 64);
+      for(idx_t f=0; f < NFACTORS; ++f) {
+        buf[0][f] = rootrow[f];
+      }
+
+      /* process entire subtree */
+      idx_t depth = 0;
+      while(idxstack[1] < fp[0][s+1]) {
+        /* propagate values down to outdepth-1 */
+        for(; depth < outdepth; ++depth) {
+          val_t const * const restrict drow
+              = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
+          p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
+        }
+
+        /* write to output and clear buf[outdepth] for next subtree */
+        fidx_t const noderow = fids[outdepth][idxstack[outdepth]];
+
+        /* propagate value up to buf[outdepth] */
+        p_propagate_up_<NFACTORS>(buf[outdepth], buf, idxstack, outdepth,idxstack[outdepth],
+            fp, fids, vals, mvals, nmodes);
+
+        val_t * const restrict outbuf = ovals + (noderow * NFACTORS);
+        p_add_hada_clear_<NFACTORS>(outbuf, buf[outdepth], buf[outdepth-1]);
+
+        /* backtrack to next unfinished node */
+        do {
+          ++idxstack[depth];
+          --depth;
+        } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
+      } /* end DFS */
+    } /* end foreach outer slice */
+
+  }
 }
 
 
+template<splatt_sync_type SYNC_TYPE>
 static void p_csf_mttkrp_internal(
   splatt_csf const * const ct,
   idx_t const tile_id,
@@ -2634,7 +2717,7 @@ static void p_csf_mttkrp_internal(
     return;
   }
   if(nmodes == 3) {
-    p_csf_mttkrp_internal3(ct, tile_id, mats, thds);
+    p_csf_mttkrp_internal3<SYNC_TYPE>(ct, tile_id, mats, thds);
     return;
   }
 
@@ -2696,9 +2779,9 @@ static void p_csf_mttkrp_internal(
           fp, fids, vals, mvals, nmodes, nfactors);
 
       val_t * const restrict outbuf = ovals + (noderow * nfactors);
-      splatt_set_lock(noderow);
+      splatt_set_lock<SYNC_TYPE>(noderow);
       p_add_hada_clear(outbuf, buf[outdepth], buf[outdepth-1], nfactors);
-      splatt_unset_lock(noderow);
+      splatt_unset_lock<SYNC_TYPE>(noderow);
 
       /* backtrack to next unfinished node */
       do {
@@ -2710,7 +2793,15 @@ static void p_csf_mttkrp_internal(
 }
 
 
-template<int NFACTORS>
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+unsigned long long assignHadaTimes[1024];
+unsigned long long propagateUpTimes[1024];
+unsigned long long hadaClearTimes[1024];
+unsigned long long acquireTimes[1024];
+#endif
+
+
+template<int NFACTORS, splatt_sync_type SYNC_TYPE>
 static void p_csf_mttkrp_internal_(
   splatt_csf const * const ct,
   idx_t const tile_id,
@@ -2726,7 +2817,7 @@ static void p_csf_mttkrp_internal_(
     return;
   }
   if(nmodes == 3) {
-    p_csf_mttkrp_internal3(ct, tile_id, mats, thds);
+    p_csf_mttkrp_internal3<SYNC_TYPE>(ct, tile_id, mats, thds);
     return;
   }
 
@@ -2754,6 +2845,13 @@ static void p_csf_mttkrp_internal_(
   /* foreach outer slice */
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
   if(NULL == fids[0]) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+    assignHadaTimes[tid*8] = 0;
+    propagateUpTimes[tid*8] = 0;
+    hadaClearTimes[tid*8] = 0;
+    acquireTimes[tid*8] = 0;
+#endif
+
     #pragma omp for schedule(dynamic, 16) nowait
     for(idx_t s=0; s < nslices; ++s) {
       fidx_t const fid = (fids[0] == NULL) ? s : fids[0][s];
@@ -2775,12 +2873,19 @@ static void p_csf_mttkrp_internal_(
       /* process entire subtree */
       idx_t depth = 0;
       while(idxstack[1] < fp[0][s+1]) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        unsigned long long temp_timer = __rdtsc();
+#endif
         /* propagate values down to outdepth-1 */
         for(; depth < outdepth; ++depth) {
           val_t const * const restrict drow
               = mvals[depth+1] + (fids[depth+1][idxstack[depth+1]] * NFACTORS);
           p_assign_hada_<NFACTORS>(buf[depth+1], buf[depth], drow);
         }
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        assignHadaTimes[tid*8] += __rdtsc() - temp_timer;
+        temp_timer = __rdtsc();
+#endif
 
         /* write to output and clear buf[outdepth] for next subtree */
         fidx_t const noderow = fids[outdepth][idxstack[outdepth]];
@@ -2788,6 +2893,11 @@ static void p_csf_mttkrp_internal_(
         /* propagate value up to buf[outdepth] */
         p_propagate_up_<NFACTORS>(buf[outdepth], buf, idxstack, outdepth,idxstack[outdepth],
             fp, fids, vals, mvals, nmodes);
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        propagateUpTimes[tid*8] += __rdtsc() - temp_timer;
+        temp_timer = __rdtsc();
+#endif
 
         val_t * const restrict outbuf = ovals + (noderow * NFACTORS);
         if(16 == NFACTORS) {
@@ -2799,65 +2909,72 @@ static void p_csf_mttkrp_internal_(
           __assume_aligned(a, 64);
           __assume_aligned(b, 64);
 
-#ifdef SPLATT_RTM
-          if(_XBEGIN_STARTED == _xbegin()) {
+          bool rtm_succeed = false;
+          if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
             for(idx_t f=0; f < NFACTORS; ++f) {
               out[f] += a[f]*b[f];
             }
+            _xend();
+            rtm_succeed = true;
           }
-          else
+
+          if(!rtm_succeed) {
+            if(SPLATT_SYNC_CAS == SYNC_TYPE) {
+              __m128d old_out, new_out, acc;
+
+              do {
+                old_out = _mm_load_pd(out);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a), _mm_load_pd(b), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)out, *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+              do {
+                old_out = _mm_load_pd(out + 2);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 2), _mm_load_pd(b + 2), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 2), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+              do {
+                old_out = _mm_load_pd(out + 4);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 4), _mm_load_pd(b + 4), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 4), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+              do {
+                old_out = _mm_load_pd(out + 6);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 6), _mm_load_pd(b + 6), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 6), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+              do {
+                old_out = _mm_load_pd(out + 8);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 8), _mm_load_pd(b + 8), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 8), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+              do {
+                old_out = _mm_load_pd(out + 10);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 10), _mm_load_pd(b + 10), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 10), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+              do {
+                old_out = _mm_load_pd(out + 12);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 12), _mm_load_pd(b + 12), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 12), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+
+              do {
+                old_out = _mm_load_pd(out + 14);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 14), _mm_load_pd(b + 14), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 14), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+            } /* SPLATT_SYNC_CAS */
+            else {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+              unsigned long long lock_begin_time = __rdtsc();
 #endif
-          {
-#ifdef SPLATT_CAS
-            __m128d old_out, new_out, acc;
-
-            do {
-              old_out = _mm_load_pd(out);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a), _mm_load_pd(b), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)out, *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-            do {
-              old_out = _mm_load_pd(out + 2);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 2), _mm_load_pd(b + 2), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 2), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-            do {
-              old_out = _mm_load_pd(out + 4);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 4), _mm_load_pd(b + 4), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 4), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-            do {
-              old_out = _mm_load_pd(out + 6);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 6), _mm_load_pd(b + 6), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 6), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-            do {
-              old_out = _mm_load_pd(out + 8);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 8), _mm_load_pd(b + 8), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 8), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-            do {
-              old_out = _mm_load_pd(out + 10);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 10), _mm_load_pd(b + 10), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 10), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-            do {
-              old_out = _mm_load_pd(out + 12);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 12), _mm_load_pd(b + 12), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 12), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-            do {
-              old_out = _mm_load_pd(out + 14);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 14), _mm_load_pd(b + 14), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 14), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-#else /* !SPLATT_CAS */
-            splatt_set_lock(noderow);
-            for(idx_t f=0; f < NFACTORS; ++f) {
-              out[f] += a[f]*b[f];
+              splatt_set_lock<SYNC_TYPE>(noderow);
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+              acquireTimes[tid*8] += __rdtsc() - lock_begin_time;
+#endif
+              for(idx_t f=0; f < NFACTORS; ++f) {
+                out[f] += a[f]*b[f];
+              }
+              splatt_unset_lock<SYNC_TYPE>(noderow);
             }
-            splatt_unset_lock(noderow);
-#endif /* !SPLATT_CAS */
           }
 
           for(idx_t f=0; f < NFACTORS; ++f) {
@@ -2867,11 +2984,18 @@ static void p_csf_mttkrp_internal_(
 #pragma omp atomic
           mttkrp_flops += 2*NFACTORS;
 #endif
+#ifdef SPLATT_COUNT_REDUCTION
+#pragma omp atomic
+          ++mttkrp_reduction;
+#endif
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+          hadaClearTimes[tid*8] += __rdtsc() - temp_timer;
+#endif
         }
         else {
-          splatt_set_lock(noderow);
+          splatt_set_lock<SYNC_TYPE>(noderow);
           p_add_hada_clear_<NFACTORS>(outbuf, buf[outdepth], buf[outdepth-1]);
-          splatt_unset_lock(noderow);
+          splatt_unset_lock<SYNC_TYPE>(noderow);
         }
 
         /* backtrack to next unfinished node */
@@ -2880,7 +3004,25 @@ static void p_csf_mttkrp_internal_(
           --depth;
         } while(depth > 0 && idxstack[depth+1] == fp[depth][idxstack[depth]+1]);
       } /* end DFS */
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      barrierTimes[tid*8] += omp_get_wtime();
+#endif
     } /* end foreach outer slice */
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+#pragma omp barrier
+#pragma omp master
+    {
+      if (mode == 3) {
+        printf("assign_hada propagate_up hada_clear acquire\n");
+        double freq = SpMP::get_cpu_freq();
+        for (int i = 0; i < omp_get_max_threads(); ++i) {
+          printf("[%d] %f %f %f %f\n", i, assignHadaTimes[tid*8]/freq, propagateUpTimes[tid*8]/freq, hadaClearTimes[tid*8]/freq, acquireTimes[tid*8]/freq);
+        }
+      }
+    }
+#pragma omp barrier
+#endif
   }
   else {
     /* fids[0] != NULL means we're using tiling, where we parallelize over tiles */
@@ -2928,75 +3070,76 @@ static void p_csf_mttkrp_internal_(
           __assume_aligned(a, 64);
           __assume_aligned(b, 64);
 
-#ifdef SPLATT_RTM
-          if(_XBEGIN_STARTED == _xbegin()) {
+          bool rtm_succeed = false;
+          if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
             for(idx_t f=0; f < NFACTORS; ++f) {
               out[f] += a[f]*b[f];
             }
+            _xend();
+            rtm_succeed = true;
           }
-          else
-#endif
-          {
-#ifdef SPLATT_CAS
-            __m128d old_out, new_out, acc;
 
-            do {
-              old_out = _mm_load_pd(out);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a), _mm_load_pd(b), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)out, *((__int128 *)&old_out), *((__int128 *)&new_out)));
+          if(!rtm_succeed) {
+            if(SPLATT_SYNC_CAS == SYNC_TYPE) {
+              __m128d old_out, new_out, acc;
 
-            do {
-              old_out = _mm_load_pd(out + 2);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 2), _mm_load_pd(b + 2), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 2), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+              do {
+                old_out = _mm_load_pd(out);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a), _mm_load_pd(b), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)out, *((__int128 *)&old_out), *((__int128 *)&new_out)));
 
-            do {
-              old_out = _mm_load_pd(out + 4);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 4), _mm_load_pd(b + 4), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 4), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+              do {
+                old_out = _mm_load_pd(out + 2);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 2), _mm_load_pd(b + 2), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 2), *((__int128 *)&old_out), *((__int128 *)&new_out)));
 
-            do {
-              old_out = _mm_load_pd(out + 6);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 6), _mm_load_pd(b + 6), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 6), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+              do {
+                old_out = _mm_load_pd(out + 4);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 4), _mm_load_pd(b + 4), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 4), *((__int128 *)&old_out), *((__int128 *)&new_out)));
 
-            do {
-              old_out = _mm_load_pd(out + 8);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 8), _mm_load_pd(b + 8), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 8), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+              do {
+                old_out = _mm_load_pd(out + 6);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 6), _mm_load_pd(b + 6), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 6), *((__int128 *)&old_out), *((__int128 *)&new_out)));
 
-            do {
-              old_out = _mm_load_pd(out + 10);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 10), _mm_load_pd(b + 10), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 10), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+              do {
+                old_out = _mm_load_pd(out + 8);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 8), _mm_load_pd(b + 8), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 8), *((__int128 *)&old_out), *((__int128 *)&new_out)));
 
-            do {
-              old_out = _mm_load_pd(out + 12);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 12), _mm_load_pd(b + 12), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 12), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+              do {
+                old_out = _mm_load_pd(out + 10);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 10), _mm_load_pd(b + 10), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 10), *((__int128 *)&old_out), *((__int128 *)&new_out)));
 
-            do {
-              old_out = _mm_load_pd(out + 14);
-              new_out = _mm_fmadd_pd(_mm_load_pd(a + 14), _mm_load_pd(b + 14), old_out);
-            } while (!__sync_bool_compare_and_swap((__int128 *)(out + 14), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+              do {
+                old_out = _mm_load_pd(out + 12);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 12), _mm_load_pd(b + 12), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 12), *((__int128 *)&old_out), *((__int128 *)&new_out)));
 
-#else /* !SPLATT_CAS */
-            splatt_set_lock(noderow);
-            for(idx_t f=0; f < NFACTORS; ++f) {
-              out[f] += a[f]*b[f];
+              do {
+                old_out = _mm_load_pd(out + 14);
+                new_out = _mm_fmadd_pd(_mm_load_pd(a + 14), _mm_load_pd(b + 14), old_out);
+              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 14), *((__int128 *)&old_out), *((__int128 *)&new_out)));
+            } /* SPLATT_SYNC_CAS */
+            else {
+              splatt_set_lock<SYNC_TYPE>(noderow);
+              for(idx_t f=0; f < NFACTORS; ++f) {
+                out[f] += a[f]*b[f];
+              }
+              splatt_unset_lock<SYNC_TYPE>(noderow);
             }
-            splatt_unset_lock(noderow);
-#endif /* !SPLATT_CAS */
-          }
+          } /* !rtm_succeed */
 
           for(idx_t f=0; f < NFACTORS; ++f) {
             a[f] = 0;
           }
         }
         else {
-          splatt_set_lock(noderow);
+          splatt_set_lock<SYNC_TYPE>(noderow);
           p_add_hada_clear_<NFACTORS>(outbuf, buf[outdepth], buf[outdepth-1]);
-          splatt_unset_lock(noderow);
+          splatt_unset_lock<SYNC_TYPE>(noderow);
         }
 
         /* backtrack to next unfinished node */
@@ -3086,16 +3229,17 @@ static void p_root_decide(
     double gflops = tensor->mttkrp_flops[mode]/time.seconds/1e9;
 
 #ifdef SPLATT_COUNT_FLOP
-    printf("       csf_mttkrp_root (%0.3fs, %.3f GBps, %.3f GFs)\n",
+    printf("       csf_mttkrp_root (%0.3f s, %.3f GBps, %.3f GFs)\n",
         time.seconds, gbps, (double)mttkrp_flops/1e9);
 #else
-    printf("       csf_mttkrp_root (%0.3fs, %.3f GBps)\n",
+    printf("       csf_mttkrp_root (%0.3f s, %.3f GBps)\n",
         time.seconds, gbps);
 #endif
   }
 }
 
 
+template<splatt_sync_type SYNC_TYPE>
 static void p_leaf_decide(
     splatt_csf const * const tensor,
     matrix_t ** mats,
@@ -3110,7 +3254,9 @@ static void p_leaf_decide(
   timer_fstart(&time);
 
   matrix_t * const M = mats[MAX_NMODES];
-  par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
+  bool use_privatization = mttkrp_use_privatization(tensor, mats, mode, opts);
+    // if reduction overhead is sufficiently small, use privatization
+  if(!use_privatization) par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
   idx_t const nfactors = mats[0]->J;
 
@@ -3120,17 +3266,50 @@ static void p_leaf_decide(
 
   #pragma omp parallel
   {
+    int nthreads = omp_get_num_threads();
     timer_start(&thds[omp_get_thread_num()].ttime);
 
     /* tile id */
     idx_t tid = 0;
     switch(tensor->which_tile) {
     case SPLATT_NOTILE:
-      if(16 == nfactors) {
-        p_csf_mttkrp_leaf_<16>(tensor, 0, mats, thds);
+      if(use_privatization) {
+        double reduction_time = -omp_get_wtime();
+        if(0 == omp_get_thread_num()) {
+          memset(M->vals, 0, nfactors*M->I*sizeof(val_t));
+        }
+        else {
+          memset(thds[omp_get_thread_num()].scratch[1], 0, nfactors*M->I*sizeof(val_t));
+        }
+        reduction_time += omp_get_wtime();
+        
+        if(16 == nfactors) {
+          p_csf_mttkrp_leaf_tiled_<16, true>(tensor, 0, mats, thds, opts);
+        }
+        else {
+          assert(false);
+        }
+
+#pragma omp barrier
+        reduction_time -= omp_get_wtime();
+#pragma omp for
+        for(idx_t i=0; i < nfactors*M->I; ++i) {
+          for(int t=1; t < nthreads; ++t) {
+            M->vals[i] += ((val_t *)thds[t].scratch[1])[i];
+          }
+        }
+        reduction_time += omp_get_wtime();
+        if(0 == omp_get_thread_num()) {
+          printf("reduction takes %f\n", reduction_time);
+        }
       }
       else {
-        p_csf_mttkrp_leaf(tensor, 0, mats, thds);
+        if(16 == nfactors) {
+          p_csf_mttkrp_leaf_<16, SYNC_TYPE>(tensor, 0, mats, thds);
+        }
+        else {
+          p_csf_mttkrp_leaf<SYNC_TYPE>(tensor, 0, mats, thds);
+        }
       }
       break;
     case SPLATT_DENSETILE:
@@ -3138,10 +3317,10 @@ static void p_leaf_decide(
       if(opts[SPLATT_OPTION_TILEDEPTH] > depth) {
         for(idx_t t=0; t < tensor->ntiles; ++t) {
           if(16 == nfactors) {
-            p_csf_mttkrp_leaf_<16>(tensor, 0, mats, thds);
+            p_csf_mttkrp_leaf_<16, SYNC_TYPE>(tensor, 0, mats, thds);
           }
           else {
-            p_csf_mttkrp_leaf(tensor, 0, mats, thds);
+            p_csf_mttkrp_leaf<SYNC_TYPE>(tensor, 0, mats, thds);
           }
         }
       } else {
@@ -3151,7 +3330,7 @@ static void p_leaf_decide(
               mode, t);
           while(tid != TILE_END) {
             if(16 == nfactors) {
-              p_csf_mttkrp_leaf_tiled_<16>(tensor, tid, mats, thds);
+              p_csf_mttkrp_leaf_tiled_<16>(tensor, tid, mats, thds, opts);
             }
             else {
               p_csf_mttkrp_leaf_tiled(tensor, tid, mats, thds);
@@ -3183,16 +3362,17 @@ static void p_leaf_decide(
     double gflops = tensor->mttkrp_flops[mode]/time.seconds/1e9;
 
 #ifdef SPLATT_COUNT_FLOP
-    printf("       csf_mttkrp_leaf (%0.3fs, %.3f GBps, %.3f GFs)\n",
+    printf("       csf_mttkrp_leaf (%0.3f s, %.3f GBps, %.3f GFs)\n",
         time.seconds, gbps, (double)mttkrp_flops/1e9);
 #else
-    printf("       csf_mttkrp_leaf (%0.3fs, %.3f GBps)\n",
+    printf("       csf_mttkrp_leaf (%0.3f s, %.3f GBps)\n",
         time.seconds, gbps);
 #endif
   }
 }
 
 
+template<splatt_sync_type SYNC_TYPE>
 static void p_intl_decide(
     splatt_csf const * const tensor,
     matrix_t ** mats,
@@ -3207,57 +3387,159 @@ static void p_intl_decide(
   timer_fstart(&time);
 
   matrix_t * const M = mats[MAX_NMODES];
-  par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
+  assert(M->I == mats[mode]->I);
+  bool use_privatization = mttkrp_use_privatization(tensor, mats, mode, opts);
+    // if reduction overhead is sufficiently small, use privatization
+  if(!use_privatization) par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
   idx_t const nfactors = mats[0]->J;
 
 #ifdef SPLATT_COUNT_FLOP
   mttkrp_flops = 0; 
 #endif
+#ifdef SPLATT_COUNT_REDUCTION
+  mttkrp_reduction = 0;
+#endif
 
   #pragma omp parallel
   {
+    int nthreads = omp_get_num_threads();
+
     timer_start(&thds[omp_get_thread_num()].ttime);
     /* tile id */
     idx_t tid = 0;
     switch(tensor->which_tile) {
     case SPLATT_NOTILE:
-      if(16 == nfactors) {
-        p_csf_mttkrp_internal_<16>(tensor, 0, mats, mode, thds);
+      if(use_privatization) {
+        double reduction_time = -omp_get_wtime();
+        if(0 == omp_get_thread_num()) {
+          memset(M->vals, 0, nfactors*M->I*sizeof(val_t));
+        }
+        else {
+          memset(thds[omp_get_thread_num()].scratch[1], 0, nfactors*M->I*sizeof(val_t));
+        }
+        reduction_time += omp_get_wtime();
+
+        if(16 == nfactors) {
+          p_csf_mttkrp_internal_tiled_<16, true>(tensor, 0, mats, mode, thds, opts);
+        }
+        else {
+          assert(false);
+        }
+
+#pragma omp barrier
+        reduction_time -= omp_get_wtime();
+#pragma omp for
+        for(idx_t i=0; i < nfactors*M->I; ++i) {
+          for(int t=1; t < nthreads; ++t) {
+            M->vals[i] += ((val_t *)thds[t].scratch[1])[i];
+          }
+        }
+        reduction_time += omp_get_wtime();
+        if(0 == omp_get_thread_num()) {
+          printf("reduction takes %f\n", reduction_time);
+        }
       }
       else {
-        p_csf_mttkrp_internal(tensor, 0, mats, mode, thds);
+        if(16 == nfactors) {
+          p_csf_mttkrp_internal_<16, SYNC_TYPE>(tensor, 0, mats, mode, thds);
+        }
+        else {
+          p_csf_mttkrp_internal<SYNC_TYPE>(tensor, 0, mats, mode, thds);
+        }
       }
       break;
     case SPLATT_DENSETILE:
+    {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      barrierTimes[omp_get_thread_num()*8] = 0;
+      double tbegin = omp_get_wtime();
+#pragma omp barrier
+#endif
       /* this mode may not be tiled due to minimum tiling depth */
       if(opts[SPLATT_OPTION_TILEDEPTH] > depth) {
-        #pragma omp for schedule(dynamic, 1) nowait
-        for(idx_t t=0; t < tensor->ntiles; ++t) {
-          if(16 == nfactors) {
-            p_csf_mttkrp_internal_<16>(tensor, t, mats, mode, thds);
+        if(use_privatization) {
+          if(0 == omp_get_thread_num()) {
+            memset(M->vals, 0, nfactors*M->I*sizeof(val_t));
           }
           else {
-            p_csf_mttkrp_internal(tensor, t, mats, mode, thds);
+            memset(thds[omp_get_thread_num()].scratch[1], 0, nfactors*M->I*sizeof(val_t));
+          }
+          #pragma omp for schedule(dynamic, 1)
+          for(idx_t t=0; t < tensor->ntiles; ++t) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+            barrierTimes[omp_get_thread_num()*8] -= omp_get_wtime();
+#endif
+            if(16 == nfactors) {
+              p_csf_mttkrp_internal_tiled_<16>(tensor, t, mats, mode, thds, opts);
+            }
+            else {
+              p_csf_mttkrp_internal_tiled(tensor, t, mats, mode, thds);
+            }
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+            barrierTimes[omp_get_thread_num()*8] += omp_get_wtime();
+#endif
+          }
+#pragma omp for
+          for(idx_t i=0; i < nfactors*M->I; ++i) {
+            for(int t=1; t < nthreads; ++t) {
+              M->vals[i] += ((val_t *)thds[omp_get_thread_num()].scratch[1])[i];
+            }
+          }
+        }
+        else {
+          #pragma omp for schedule(dynamic, 1) nowait
+          for(idx_t t=0; t < tensor->ntiles; ++t) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+            barrierTimes[omp_get_thread_num()*8] -= omp_get_wtime();
+#endif
+            if(16 == nfactors) {
+              p_csf_mttkrp_internal_<16, SYNC_TYPE>(tensor, t, mats, mode, thds);
+            }
+            else {
+              p_csf_mttkrp_internal<SYNC_TYPE>(tensor, t, mats, mode, thds);
+            }
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+            barrierTimes[omp_get_thread_num()*8] += omp_get_wtime();
+#endif
           }
         }
       } else {
         #pragma omp for schedule(dynamic, 1) nowait
         for(idx_t t=0; t < tensor->tile_dims[mode]; ++t) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+          barrierTimes[omp_get_thread_num()*8] -= omp_get_wtime();
+#endif
           tid = get_next_tileid(TILE_BEGIN, tensor->tile_dims, nmodes,
               mode, t);
           while(tid != TILE_END) {
             if(16 == nfactors) {
-              p_csf_mttkrp_internal_tiled_<16>(tensor, tid, mats, mode, thds);
+              p_csf_mttkrp_internal_tiled_<16>(tensor, tid, mats, mode, thds, opts);
             }
             else {
               p_csf_mttkrp_internal_tiled(tensor, tid, mats, mode, thds);
             }
             tid = get_next_tileid(tid, tensor->tile_dims, nmodes, mode, t);
           }
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+          barrierTimes[omp_get_thread_num()*8] += omp_get_wtime();
+#endif
         }
       }
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+#pragma omp barrier
+#pragma omp master
+      {
+        double tend = omp_get_wtime();
+        double barrier_time_sum = 0;
+        for (int i = 0; i < nthreads; ++i) {
+          barrier_time_sum += (tend - tbegin) - barrierTimes[i*8];
+        }
+        printf("%f load imbalance = %f\n", tend - tbegin, barrier_time_sum/(tend - tbegin)/nthreads);
+      }
+#endif /* SPLATT_MEASURE_LOAD_BALANCE */
       break;
+    }
 
     /* XXX */
     case SPLATT_SYNCTILE:
@@ -3283,10 +3565,10 @@ static void p_intl_decide(
     double gflops = tensor->mttkrp_flops[mode]/time.seconds/1e9;
 
 #ifdef SPLATT_COUNT_FLOP
-    printf("       csf_mttkrp_internal (%0.3fs, %.3f GBps, %.3f GFs)\n",
-        time.seconds, gbps, (double)mttkrp_flops/1e9);
+    printf("       csf_mttkrp_internal (%0.3f s, %.3f GBps, %.3f GFs, %ld reductions)\n",
+        time.seconds, gbps, (double)mttkrp_flops/1e9, mttkrp_reduction);
 #else
-    printf("       csf_mttkrp_internal (%0.3fs, %.3f GBps)\n",
+    printf("       csf_mttkrp_internal (%0.3f s, %.3f GBps)\n",
         time.seconds, gbps);
 #endif
   }
@@ -3297,7 +3579,8 @@ static void p_intl_decide(
  * PUBLIC FUNCTIONS
  *****************************************************************************/
 
-void mttkrp_csf(
+template<splatt_sync_type SYNC_TYPE>
+void p_mttkrp_csf(
   splatt_csf const * const tensors,
   matrix_t ** mats,
   idx_t const mode,
@@ -3324,9 +3607,9 @@ void mttkrp_csf(
     if(outdepth == 0) {
       p_root_decide(tensors+0, mats, mode, thds, opts);
     } else if(outdepth == nmodes - 1) {
-      p_leaf_decide(tensors+0, mats, mode, thds, opts);
+      p_leaf_decide<SYNC_TYPE>(tensors+0, mats, mode, thds, opts);
     } else {
-      p_intl_decide(tensors+0, mats, mode, thds, opts);
+      p_intl_decide<SYNC_TYPE>(tensors+0, mats, mode, thds, opts);
     }
     break;
 
@@ -3340,7 +3623,7 @@ void mttkrp_csf(
       if(outdepth == 0) {
         p_root_decide(tensors+0, mats, mode, thds, opts);
       } else {
-        p_intl_decide(tensors+0, mats, mode, thds, opts);
+        p_intl_decide<SYNC_TYPE>(tensors+0, mats, mode, thds, opts);
       }
     }
     break;
@@ -3352,7 +3635,36 @@ void mttkrp_csf(
 }
 
 
-
+void mttkrp_csf(
+  splatt_csf const * const tensors,
+  matrix_t ** mats,
+  idx_t const mode,
+  thd_info * const thds,
+  double const * const opts)
+{
+  splatt_sync_type sync_type = (splatt_sync_type)opts[SPLATT_OPTION_SYNCHRONIZATION];
+  switch(sync_type) {
+  case SPLATT_SYNC_OMP_LOCK:
+    p_mttkrp_csf<SPLATT_SYNC_OMP_LOCK>(tensors, mats, mode, thds, opts);
+    break; 
+  case SPLATT_SYNC_TTAS:
+    p_mttkrp_csf<SPLATT_SYNC_TTAS>(tensors, mats, mode, thds, opts);
+    break; 
+  case SPLATT_SYNC_RTM:
+    printf("%s:%d\n", __FILE__, __LINE__);
+    p_mttkrp_csf<SPLATT_SYNC_RTM>(tensors, mats, mode, thds, opts);
+    break; 
+  case SPLATT_SYNC_CAS:
+    p_mttkrp_csf<SPLATT_SYNC_CAS>(tensors, mats, mode, thds, opts);
+    break; 
+  case SPLATT_SYNC_NOSYNC:
+    p_mttkrp_csf<SPLATT_SYNC_NOSYNC>(tensors, mats, mode, thds, opts);
+    break; 
+  default:
+    assert(false);
+    break;
+  }
+}
 
 
 
