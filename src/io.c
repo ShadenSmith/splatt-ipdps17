@@ -490,12 +490,13 @@ void fill_binary_idx(
   if(header->idx_width == sizeof(splatt_idx_t)) {
     fread(buffer, sizeof(idx_t), count, fin);
   } else {
-    uint32_t *ubuf = (uint32_t *)malloc(sizeof(uint32_t)*count);
+    uint32_t *ubuf = (uint32_t *)splatt_malloc(sizeof(uint32_t)*count);
     fread(ubuf, sizeof(uint32_t), count, fin);
 #pragma omp parallel for
     for(idx_t n=0; n < count; ++n) {
       buffer[n] = ubuf[n];
     }
+    splatt_free(ubuf);
   }
 }
 
@@ -508,13 +509,13 @@ void fill_binary_fidx(
   if(header->idx_width == sizeof(splatt_fidx_t)) {
     fread(buffer, sizeof(splatt_fidx_t), count, fin);
   } else {
-    uint32_t *ubuf = (uint32_t *)malloc(sizeof(uint32_t)*count);
+    uint32_t *ubuf = (uint32_t *)splatt_malloc(sizeof(uint32_t)*count);
     fread(ubuf, sizeof(uint32_t), count, fin);
 #pragma omp parallel for
     for(idx_t n=0; n < count; ++n) {
       buffer[n] = ubuf[n];
     }
-    free(ubuf);
+    splatt_free(ubuf);
   }
 }
 
@@ -527,13 +528,13 @@ void fill_binary_val(
   if(header->val_width == sizeof(splatt_val_t)) {
     fread(buffer, sizeof(val_t), count, fin);
   } else {
-    float *fbuf = (float *)malloc(sizeof(float)*count);
+    float *fbuf = (float *)splatt_malloc(sizeof(float)*count);
     fread(fbuf, sizeof(float), count, fin);
 #pragma omp parallel for
     for(idx_t n=0; n < count; ++n) {
       buffer[n] = fbuf[n];
     }
-    free(fbuf);
+    splatt_free(fbuf);
   }
 }
 
