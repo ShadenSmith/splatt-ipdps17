@@ -13,6 +13,13 @@
 #include "io.h"
 #include <omp.h>
 
+#ifdef __AVX512F__
+//#define HBW_ALLOC
+#endif
+#ifdef HBW_ALLOC
+#include <hbwmalloc.h>
+#endif
+
 /******************************************************************************
  * API FUNCTIONS
  *****************************************************************************/
@@ -332,8 +339,13 @@ void splatt_csf_read_file(
       }
     }
 
+#ifdef HBW_ALLOC
+    hbw_posix_memalign((void **)&ft->fids[ct->nmodes-1], 4096, ft->nfibs[ct->nmodes-1] * sizeof(**(ft->fids)));
+    hbw_posix_memalign((void **)&ft->vals, 4096, ft->nfibs[ct->nmodes-1] * sizeof(*(ft->vals)));
+#else
     ft->fids[ct->nmodes-1] = splatt_malloc(ft->nfibs[ct->nmodes-1] * sizeof(**(ft->fids)));
     ft->vals               = splatt_malloc(ft->nfibs[ct->nmodes-1] * sizeof(*(ft->vals)));
+#endif
 
     fread(ft->fids[ct->nmodes-1], sizeof(*ft->fids[ct->nmodes-1]), ft->nfibs[ct->nmodes-1], fin);
     fread(ft->vals, sizeof(*ft->vals), ft->nfibs[ct->nmodes-1], fin);
@@ -859,8 +871,13 @@ static void p_csf_alloc_untiled(
 
   /* last row of fptr is just nonzero inds */
   pt->nfibs[nmodes-1] = ct->nnz;
+#ifdef HBW_ALLOC
+  hbw_posix_memalign((void **)&pt->fids[nmodes-1], 4096, ct->nnz * sizeof(**(pt->fids)));
+  hbw_posix_memalign((void **)&pt->vals, 4096, ct->nnz * sizeof(*(pt->vals)));
+#else
   pt->fids[nmodes-1] = splatt_malloc(ct->nnz * sizeof(**(pt->fids)));
   pt->vals           = splatt_malloc(ct->nnz * sizeof(*(pt->vals)));
+#endif
 #pragma omp parallel for
   for (idx_t i = 0; i < ct->nnz; ++i) {
     pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][i];
@@ -913,8 +930,13 @@ static void p_csf_alloc_densetile(
   ct->ntiles = ntiles;
   ct->pt = splatt_malloc(ntiles * sizeof(*(ct->pt)));
 
+#ifdef HBW_ALLOC
+  hbw_posix_memalign((void **)&ct->pt[0].fids[nmodes-1], 4096, ct->nnz * sizeof(**(ct->pt[0].fids)));
+  hbw_posix_memalign((void **)&ct->pt[0].vals, 4096, ct->nnz * sizeof(*(ct->pt[0].vals)));
+#else
   ct->pt[0].fids[nmodes - 1] = splatt_malloc(ct->nnz * sizeof(**(ct->pt[0].fids)));
   ct->pt[0].vals = splatt_malloc(ct->nnz * sizeof(*(ct->pt[0].vals)));
+#endif
 
   for(idx_t m=0; m < nmodes-1; ++m) {
 #pragma omp parallel for if (ntiles > 1) schedule(dynamic, 1)
@@ -1095,8 +1117,13 @@ void csf_free_mode(
     splatt_csf * const csf)
 {
   /* free each tile of sparsity pattern */
+#ifdef HBW_ALLOC
+  hbw_free(csf->pt[0].vals);
+  hbw_free(csf->pt[0].fids[csf->nmodes-1]);
+#else
   free(csf->pt[0].vals);
   free(csf->pt[0].fids[csf->nmodes-1]);
+#endif
   for(idx_t m=0; m < csf->nmodes-1; ++m) {
     free(csf->pt[0].fptr[m]);
     free(csf->pt[0].fids[m]);
