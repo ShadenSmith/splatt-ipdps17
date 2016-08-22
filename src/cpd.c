@@ -272,12 +272,43 @@ double cpd_als_iterate(
   idx_t const nmodes = tensors[0].nmodes;
   idx_t const nthreads = (idx_t) opts[SPLATT_OPTION_NTHREADS];
 
+  /* Compute thread-private scratch size for reduction */
+  idx_t reduction_scratch_size = 0;
+  for(int m=0; m < nmodes; ++m) {
+    splatt_csf_type which = (splatt_csf_type)opts[SPLATT_OPTION_CSF_ALLOC];
+    idx_t outdepth = MAX_NMODES;
+    switch(which) {
+    case SPLATT_CSF_ONEMODE:
+      outdepth = csf_mode_depth(m, tensors[0].dim_perm, nmodes);
+      if(outdepth > 0) {
+        if(mttkrp_use_privatization(tensors, mats, m, opts)) {
+          printf("mode %d use privatization\n", m);
+          reduction_scratch_size = SS_MAX(reduction_scratch_size, mats[m]->I);
+        }
+      }
+      break;
+    case SPLATT_CSF_TWOMODE:
+      if(m != tensors[0].dim_perm[nmodes-1]) { /* longest mode handled via second tensor's root */
+        outdepth = csf_mode_depth(m, tensors[0].dim_perm, nmodes);
+        if(outdepth > 0) {
+          if(mttkrp_use_privatization(tensors, mats, m, opts)) {
+            printf("mode %d use privatization\n", m);
+            reduction_scratch_size = SS_MAX(reduction_scratch_size, mats[m]->I);
+          }
+        }
+      }
+      break;
+    default:
+      break;
+    }
+  }
+
   /* Setup thread structures. + 64 bytes is to avoid false sharing.
    * TODO make this better */
   omp_set_num_threads(nthreads);
   thd_info * thds =  thd_init(nthreads, 3,
     (nfactors * nfactors * sizeof(val_t)) + 64,
-    0,
+    (nfactors * reduction_scratch_size * sizeof(val_t)) + 64,
     (nmodes * nfactors * sizeof(val_t)) + 64);
 
   matrix_t * m1 = mats[MAX_NMODES];
