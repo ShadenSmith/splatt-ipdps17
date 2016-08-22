@@ -26,7 +26,7 @@ double * splatt_default_opts(void)
   opts[SPLATT_OPTION_DECOMP] = SPLATT_DECOMP_MEDIUM;
   opts[SPLATT_OPTION_COMM]   = SPLATT_COMM_ALL2ALL;
 
-  opts[SPLATT_OPTION_SYNCHRONIZATION] = SPLATT_SYNC_CAS;
+  opts[SPLATT_OPTION_SYNCHRONIZATION] = SPLATT_SYNC_OMP_LOCK;
   opts[SPLATT_OPTION_PRIVATIZATION_THREASHOLD] = 0; /* default never privatize */
 
   if(omp_in_parallel()) {
