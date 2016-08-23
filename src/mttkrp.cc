@@ -3243,12 +3243,15 @@ static void p_intl_decide(
       /* this mode may not be tiled due to minimum tiling depth */
       if(opts[SPLATT_OPTION_TILEDEPTH] > depth) {
         if(use_privatization) {
+          double reduction_time = -omp_get_wtime();
           if(0 == omp_get_thread_num()) {
             memset(M->vals, 0, nfactors*M->I*sizeof(val_t));
           }
           else {
             memset(thds[omp_get_thread_num()].scratch[1], 0, nfactors*M->I*sizeof(val_t));
           }
+          reduction_time += omp_get_wtime();
+
           #pragma omp for schedule(dynamic, 1)
           for(idx_t t=0; t < tensor->ntiles; ++t) {
 #ifdef SPLATT_MEASURE_LOAD_BALANCE
@@ -3264,11 +3267,17 @@ static void p_intl_decide(
             barrierTimes[omp_get_thread_num()*8] += omp_get_wtime();
 #endif
           }
+
+          reduction_time -= omp_get_wtime();
 #pragma omp for
           for(idx_t i=0; i < nfactors*M->I; ++i) {
             for(int t=1; t < nthreads; ++t) {
-              M->vals[i] += ((val_t *)thds[omp_get_thread_num()].scratch[1])[i];
+              M->vals[i] += ((val_t *)thds[t].scratch[1])[i];
             }
+          }
+          reduction_time += omp_get_wtime();
+          if(0 == omp_get_thread_num()) {
+            printf("reduction takes %f\n", reduction_time);
           }
         }
         else {
