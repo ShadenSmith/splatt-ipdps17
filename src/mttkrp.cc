@@ -7,6 +7,7 @@
 #include "thd_info.h"
 #include "tile.h"
 #include "util.h"
+#include "simd_utils.h"
 #include <limits.h>
 #include <omp.h>
 #include <time.h>
@@ -154,6 +155,179 @@ static inline void p_add_hada(
   for(idx_t f=0; f < nfactors; ++f) {
     out[f] += a[f] * b[f];
   }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*nfactors;
+#endif
+}
+
+
+template<int NFACTORS>
+static inline void p_add_hada_(
+  SPLATT_SIMDFPTYPE * const restrict out,
+  SPLATT_SIMDFPTYPE const * const restrict a,
+  val_t const * const restrict b)
+{
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
+
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+  for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+    out[f] = _MM_FMADD(a[f], _MM_LOAD(b + f*SPLATT_VLEN), out[f]);
+  }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*NFACTORS;
+#endif
+}
+
+
+template<int NFACTORS>
+static inline void p_add_hada_(
+  val_t * const restrict out,
+  SPLATT_SIMDFPTYPE const * const restrict a,
+  SPLATT_SIMDFPTYPE const * const restrict b)
+{
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
+
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+  for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+    _MM_STORE(out + f*SPLATT_VLEN, _MM_FMADD(a[f], b[f], _MM_LOAD(out + f*SPLATT_VLEN)));
+  }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*NFACTORS;
+#endif
+}
+
+
+template<int NFACTORS, splatt_sync_type SYNC_TYPE>
+static inline void p_add_hada_lock_(
+  val_t * const restrict out,
+  SPLATT_SIMDFPTYPE const * const restrict a,
+  SPLATT_SIMDFPTYPE const * const restrict b,
+  idx_t oid)
+{
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
+
+  if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
+    p_add_hada_<NFACTORS>(out, a, b);
+    _xend();
+    return;
+  }
+
+  if(SPLATT_SYNC_CAS == SYNC_TYPE) {
+    __m128d old_ov, new_ov, a_v, b_v;
+
+    do {
+      old_ov = _mm_load_pd(out);
+#ifdef __AVX512F__
+      a_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(a[0]), 0));
+      b_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(b[0]), 0));
+#else
+      a_v = _mm256_extractf128_pd(a[0], 0);
+      b_v = _mm256_extractf128_pd(b[0], 0);
+#endif
+      new_ov = _mm_fmadd_pd(a_v, b_v, old_ov);
+    } while (!__sync_bool_compare_and_swap((__int128 *)out, *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#ifndef SPLATT_EMULATE_VECTOR_CAS
+    do {
+      old_ov = _mm_load_pd(out + 2);
+#ifdef __AVX512F__
+      a_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(a[0]), 1));
+      b_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(b[0]), 1));
+#else
+      a_v = _mm256_extractf128_pd(a[0], 1);
+      b_v = _mm256_extractf128_pd(b[0], 1);
+#endif
+      new_ov = _mm_fmadd_pd(a_v, b_v, old_ov);
+    } while (!__sync_bool_compare_and_swap((__int128 *)(out + 2), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+
+    do {
+      old_ov = _mm_load_pd(out + 4);
+#ifdef __AVX512F__
+      a_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(a[0]), 2));
+      b_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(b[0]), 2));
+#else
+      a_v = _mm256_extractf128_pd(a[1], 0);
+      b_v = _mm256_extractf128_pd(b[1], 0);
+#endif
+      new_ov = _mm_fmadd_pd(a_v, b_v, old_ov);
+    } while (!__sync_bool_compare_and_swap((__int128 *)(out + 4), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+    do {
+      old_ov = _mm_load_pd(out + 6);
+#ifdef __AVX512F__
+      a_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(a[0]), 3));
+      b_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(b[0]), 3));
+#else
+      a_v = _mm256_extractf128_pd(a[1], 1);
+      b_v = _mm256_extractf128_pd(b[1], 1);
+#endif
+      new_ov = _mm_fmadd_pd(a_v, b_v, old_ov);
+    } while (!__sync_bool_compare_and_swap((__int128 *)(out + 6), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#endif
+
+    do {
+      old_ov = _mm_load_pd(out + 8);
+#ifdef __AVX512F__
+      a_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(a[1]), 0));
+      b_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(b[1]), 0));
+#else
+      a_v = _mm256_extractf128_pd(a[2], 0);
+      b_v = _mm256_extractf128_pd(b[2], 0);
+#endif
+      new_ov = _mm_fmadd_pd(a_v, b_v, old_ov);
+    } while (!__sync_bool_compare_and_swap((__int128 *)(out + 8), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#ifndef SPLATT_EMULATE_VECTOR_CAS
+    do {
+      old_ov = _mm_load_pd(out + 10);
+#ifdef __AVX512F__
+      a_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(a[1]), 1));
+      b_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(b[1]), 1));
+#else
+      a_v = _mm256_extractf128_pd(a[2], 1);
+      b_v = _mm256_extractf128_pd(b[2], 1);
+#endif
+      new_ov = _mm_fmadd_pd(a_v, b_v, old_ov);
+    } while (!__sync_bool_compare_and_swap((__int128 *)(out + 10), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+
+    do {
+      old_ov = _mm_load_pd(out + 12);
+#ifdef __AVX512F__
+      a_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(a[1]), 2));
+      b_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(b[1]), 2));
+#else
+      a_v = _mm256_extractf128_pd(a[3], 0);
+      b_v = _mm256_extractf128_pd(b[3], 0);
+#endif
+      new_ov = _mm_fmadd_pd(a_v, b_v, old_ov);
+    } while (!__sync_bool_compare_and_swap((__int128 *)(out + 12), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+    do {
+      old_ov = _mm_load_pd(out + 14);
+#ifdef __AVX512F__
+      a_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(a[1]), 3));
+      b_v = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(b[1]), 3));
+#else
+      a_v = _mm256_extractf128_pd(a[3], 1);
+      b_v = _mm256_extractf128_pd(b[3], 1);
+#endif
+      new_ov = _mm_fmadd_pd(a_v, b_v, old_ov);
+    } while (!__sync_bool_compare_and_swap((__int128 *)(out + 14), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#endif
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+    mttkrp_flops += 2*NFACTORS;
+#endif
+  } // SPLATT_SYNC_CAS
+  else {
+    splatt_set_lock<SYNC_TYPE>(oid);
+    p_add_hada_<NFACTORS>(out, a, b);
+    splatt_unset_lock<SYNC_TYPE>(oid);
+  }
+
+#ifdef SPLATT_COUNT_REDUCTION
+#pragma omp atomic
+  ++mttkrp_reduction;
+#endif
 }
 
 
@@ -167,22 +341,43 @@ static inline void p_add_hada_clear(
     out[f] += a[f] * b[f];
     a[f] = 0;
   }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*nfactors;
+#endif
+}
+
+
+template<int NFACTORS>
+static inline void p_add_hada_clear_(
+  SPLATT_SIMDFPTYPE * const restrict out,
+  SPLATT_SIMDFPTYPE * const restrict a,
+  val_t const * const restrict b)
+{
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+  for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+    out[f] = _MM_FMADD(a[f], _MM_LOAD(b + f*SPLATT_VLEN), out[f]);
+    a[f] = _MM_SETZERO();
+  }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*NFACTORS;
+#endif
 }
 
 
 template<int NFACTORS>
 static inline void p_add_hada_clear_(
   val_t * const restrict out,
-  val_t * const restrict a,
-  val_t const * const restrict b)
+  SPLATT_SIMDFPTYPE * const restrict a,
+  SPLATT_SIMDFPTYPE const * const restrict b)
 {
   assert(NFACTORS*sizeof(val_t)%64 == 0);
-  __assume_aligned(out, 64);
-  __assume_aligned(a, 64);
-  __assume_aligned(b, 64);
-  for(idx_t f=0; f < NFACTORS; ++f) {
-    out[f] += a[f] * b[f];
-    a[f] = 0;
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+  for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+    _MM_STORE(out + f*SPLATT_VLEN, _MM_FMADD(a[f], b[f], _MM_LOAD(out + f*SPLATT_VLEN)));
+    a[f] = _MM_SETZERO();
   }
 #ifdef SPLATT_COUNT_FLOP
 #pragma omp atomic
@@ -200,21 +395,23 @@ static inline void p_assign_hada(
   for(idx_t f=0; f < nfactors; ++f) {
     out[f] = a[f] * b[f];
   }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += nfactors;
+#endif
 }
 
 
 template<int NFACTORS>
 static inline void p_assign_hada_(
-  val_t * const restrict out,
-  val_t const * const restrict a,
+  SPLATT_SIMDFPTYPE * const restrict out,
+  SPLATT_SIMDFPTYPE const * const restrict a,
   val_t const * const restrict b)
 {
   assert(NFACTORS*sizeof(val_t)%64 == 0);
-  __assume_aligned(out, 64);
-  __assume_aligned(a, 64);
-  __assume_aligned(b, 64);
-  for(idx_t f=0; f < NFACTORS; ++f) {
-    out[f] = a[f] * b[f];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+  for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+    out[f] = _MM_MUL(a[f], _MM_LOAD(b + f*SPLATT_VLEN));
   }
 #ifdef SPLATT_COUNT_FLOP
 #pragma omp atomic
@@ -262,46 +459,131 @@ static inline void p_csf_process_fiber_lock(
       splatt_unset_lock<SYNC_TYPE>(inds[jj]);
     }
   }
+
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*nfactors*(end - start);
+#endif
+
+#ifdef SPLATT_COUNT_REDUCTION
+#pragma omp atomic
+  mttkrp_reduction += end - start;
+#endif
 }
 
 
 template<int NFACTORS, splatt_sync_type SYNC_TYPE>
 static inline void p_csf_process_fiber_lock_(
   val_t * const leafmat,
-  val_t const * const restrict accumbuf,
+  SPLATT_SIMDFPTYPE const * const restrict accumbuf,
   idx_t const start,
   idx_t const end,
   fidx_t const * const restrict inds,
   val_t const * const restrict vals)
 {
-  assert(NFACTORS*sizeof(val_t)%64 == 0);
-  __assume_aligned(accumbuf, 64);
+  assert(NFACTORS == 16 && sizeof(val_t) == 8);
+
   for(idx_t jj=start; jj < end; ++jj) {
     val_t * const restrict leafrow = leafmat + (inds[jj] * NFACTORS);
-    __assume_aligned(leafrow, 64);
     val_t const v = vals[jj];
 
     if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
-      for(idx_t f=0; f < NFACTORS; ++f) {
-        leafrow[f] += v * accumbuf[f];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+        _MM_STORE(leafrow + f*SPLATT_VLEN, _MM_FMADD(_MM_SET1(v), accumbuf[f], _MM_LOAD(leafrow + f*SPLATT_VLEN)));
       }
       _xend();
       continue;
     }
 
     if(SPLATT_SYNC_CAS == SYNC_TYPE) {
-      for(idx_t f=0; f < NFACTORS; ++f) {
-        double old_leafrow, new_leafrow;
-        do {
-          old_leafrow = leafrow[f];
-          new_leafrow = old_leafrow + v * accumbuf[f];
-        } while (!__sync_bool_compare_and_swap((long long *)(leafrow + f), *((long long *)(&old_leafrow)), *((long long *)(&new_leafrow))));
-      }
+      __m128d old_ov, new_ov, acc;
+
+      do {
+        old_ov = _mm_load_pd(leafrow);
+#ifdef __AVX512F__
+        acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumbuf[0]), 0));
+#else
+        acc = _mm256_extractf128_pd(accumbuf[0], 0);
+#endif
+        new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+      } while (!__sync_bool_compare_and_swap((__int128 *)leafrow, *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#ifndef SPLATT_EMULATE_VECTOR_CAS
+      do {
+        old_ov = _mm_load_pd(leafrow + 2);
+#ifdef __AVX512F__
+        acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumbuf[0]), 1));
+#else
+        acc = _mm256_extractf128_pd(accumbuf[0], 1);
+#endif
+        new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+      } while (!__sync_bool_compare_and_swap((__int128 *)(leafrow + 2), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+
+      do {
+        old_ov = _mm_load_pd(leafrow + 4);
+#ifdef __AVX512F__
+        acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumbuf[0]), 2));
+#else
+        acc = _mm256_extractf128_pd(accumbuf[1], 0);
+#endif
+        new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+      } while (!__sync_bool_compare_and_swap((__int128 *)(leafrow + 4), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+      do {
+        old_ov = _mm_load_pd(leafrow + 6);
+#ifdef __AVX512F__
+        acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumbuf[0]), 3));
+#else
+        acc = _mm256_extractf128_pd(accumbuf[1], 1);
+#endif
+        new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+      } while (!__sync_bool_compare_and_swap((__int128 *)(leafrow + 6), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#endif
+
+      do {
+        old_ov = _mm_load_pd(leafrow + 8);
+#ifdef __AVX512F__
+        acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumbuf[1]), 0));
+#else
+        acc = _mm256_extractf128_pd(accumbuf[2], 0);
+#endif
+        new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+      } while (!__sync_bool_compare_and_swap((__int128 *)(leafrow + 8), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#ifndef SPLATT_EMULATE_VECTOR_CAS
+      do {
+        old_ov = _mm_load_pd(leafrow + 10);
+#ifdef __AVX512F__
+        acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumbuf[1]), 1));
+#else
+        acc = _mm256_extractf128_pd(accumbuf[2], 1);
+#endif
+        new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+      } while (!__sync_bool_compare_and_swap((__int128 *)(leafrow + 10), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+
+      do {
+        old_ov = _mm_load_pd(leafrow + 12);
+#ifdef __AVX512F__
+        acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumbuf[1]), 2));
+#else
+        acc = _mm256_extractf128_pd(accumbuf[3], 0);
+#endif
+        new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+      } while (!__sync_bool_compare_and_swap((__int128 *)(leafrow + 12), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+      do {
+        old_ov = _mm_load_pd(leafrow + 14);
+#ifdef __AVX512F__
+        acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumbuf[1]), 3));
+#else
+        acc = _mm256_extractf128_pd(accumbuf[3], 1);
+#endif
+        new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
+      } while (!__sync_bool_compare_and_swap((__int128 *)(leafrow + 14), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
+#endif
     }
     else {
       splatt_set_lock<SYNC_TYPE>(inds[jj]);
-      for(idx_t f=0; f < NFACTORS; ++f) {
-        leafrow[f] += v * accumbuf[f];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+        _MM_STORE(leafrow + f*SPLATT_VLEN, _MM_FMADD(_MM_SET1(v), accumbuf[f], _MM_LOAD(leafrow + f*SPLATT_VLEN)));
       }
       splatt_unset_lock<SYNC_TYPE>(inds[jj]);
     }
@@ -309,6 +591,11 @@ static inline void p_csf_process_fiber_lock_(
 #ifdef SPLATT_COUNT_FLOP
 #pragma omp atomic
   mttkrp_flops += 2*NFACTORS*(end - start);
+#endif
+
+#ifdef SPLATT_COUNT_REDUCTION
+#pragma omp atomic
+  mttkrp_reduction += end - start;
 #endif
 }
 
@@ -329,26 +616,31 @@ static inline void p_csf_process_fiber_nolock(
       leafrow[f] += v * accumbuf[f];
     }
   }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*nfactors*(end - start);
+#endif
 }
 
 
 template<int NFACTORS>
 static inline void p_csf_process_fiber_nolock_(
   val_t * const leafmat,
-  val_t const * const restrict accumbuf,
+  SPLATT_SIMDFPTYPE const * const restrict accumbuf,
   idx_t const start,
   idx_t const end,
   fidx_t const * const restrict inds,
   val_t const * const restrict vals)
 {
   assert(NFACTORS*sizeof(val_t)%64 == 0);
-  __assume_aligned(accumbuf, 64);
+
   for(idx_t jj=start; jj < end; ++jj) {
     val_t * const restrict leafrow = leafmat + (inds[jj] * NFACTORS);
-    __assume_aligned(leafrow, 64);
     val_t const v = vals[jj];
-    for(idx_t f=0; f < NFACTORS; ++f) {
-      leafrow[f] += v * accumbuf[f];
+
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+    for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+      _MM_STORE(leafrow + f*SPLATT_VLEN, _MM_FMADD(_MM_SET1(v), accumbuf[f], _MM_LOAD(leafrow + f*SPLATT_VLEN)));
     }
   }
 #ifdef SPLATT_COUNT_FLOP
@@ -375,12 +667,16 @@ static inline void p_csf_process_fiber(
       accumbuf[f] += v * row[f];
     }
   }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+  mttkrp_flops += 2*nfactors*(end - start);
+#endif
 }
 
 
 template<int NFACTORS>
 static inline void p_csf_process_fiber_(
-  val_t * const restrict accumbuf,
+  SPLATT_SIMDFPTYPE * const restrict accumbuf,
   val_t const * const leafmat,
   idx_t const start,
   idx_t const end,
@@ -388,14 +684,15 @@ static inline void p_csf_process_fiber_(
   val_t const * const vals)
 {
   assert(NFACTORS*sizeof(val_t)%64 == 0);
+
   /* foreach nnz in fiber */
   for(idx_t j=start; j < end; ++j) {
     val_t const v = vals[j] ;
     val_t const * const restrict row = leafmat + (NFACTORS * inds[j]);
-    __assume_aligned(row, 64);
-    __assume_aligned(accumbuf, 64);
-    for(idx_t f=0; f < NFACTORS; ++f) {
-      accumbuf[f] += v * row[f];
+
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+    for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+      accumbuf[f] = _MM_FMADD(_MM_SET1(v), _MM_LOAD(row + f*SPLATT_VLEN), accumbuf[f]);
     }
   }
 #ifdef SPLATT_COUNT_FLOP
@@ -473,8 +770,8 @@ static inline void p_propagate_up(
 
 template<int NFACTORS>
 static inline void p_propagate_up_(
-  val_t * const out,
-  val_t * const * const buf,
+  SPLATT_SIMDFPTYPE * const out,
+  SPLATT_SIMDFPTYPE * const * const buf,
   idx_t * const restrict idxstack,
   idx_t const init_depth,
   idx_t const init_idx,
@@ -495,10 +792,9 @@ static inline void p_propagate_up_(
   assert(init_depth < nmodes-1);
 
   /* clear out accumulation buffer */
-  __assume_aligned(out, 64);
-  for(idx_t f=0; f < NFACTORS; ++f) {
-    __assume_aligned(buf[init_depth+1], 64);
-    buf[init_depth+1][f] = 0;
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+  for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+    buf[init_depth+1][f] = _MM_SETZERO();
   }
 
   while(idxstack[init_depth+1] < fp[init_depth][init_idx+1]) {
@@ -515,8 +811,8 @@ static inline void p_propagate_up_(
 
     /* exit early if there is no propagation to do... */
     if(init_depth == nmodes-2) {
-      for(idx_t f=0; f < NFACTORS; ++f) {
-        __assume_aligned(buf[depth+1], 64);
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
         out[f] = buf[depth+1][f];
       }
       return;
@@ -536,8 +832,8 @@ static inline void p_propagate_up_(
   } /* end DFS */
 
   /* copy to out */
-  for(idx_t f=0; f < NFACTORS; ++f) {
-    __assume_aligned(buf[init_depth+1], 64);
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+  for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
     out[f] = buf[init_depth+1][f];
   }
 }
@@ -549,49 +845,16 @@ static void p_csf_mttkrp_root3_kernel_(
   const idx_t *sptr, const idx_t *fptr,
   const fidx_t *fids, const fidx_t *inds,
   const val_t *avals, const val_t *bvals, val_t *mv,
-  val_t *accumF, val_t *accumO,
   idx_t s)
 {
   assert(NFACTORS == 16 && sizeof(val_t) == 8);
 
-#ifdef SPLATT_INTRINSIC
-#ifdef __AVX512F__
-  __m512d accumO_v1, accumO_v2;
-  if (TILED) {
-    accumO_v1 = _mm512_load_pd(mv);
-    accumO_v2 = _mm512_load_pd(mv + 8);
+  __declspec(aligned(64)) SPLATT_SIMDFPTYPE accumF[NFACTORS/SPLATT_VLEN], accumO[NFACTORS/SPLATT_VLEN];
+
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+  for(int i=0; i < NFACTORS/SPLATT_VLEN; ++i) {
+    accumO[i] = TILED ? _MM_LOAD(mv + i*SPLATT_VLEN) : _MM_SETZERO();
   }
-  else {
-    accumO_v1 = _mm512_setzero_pd();
-    accumO_v2 = _mm512_setzero_pd();
-  }
-#else
-  __m256d accumO_v1, accumO_v2, accumO_v3, accumO_v4;
-  if (TILED) {
-    accumO_v1 = _mm256_load_pd(mv);
-    accumO_v2 = _mm256_load_pd(mv + 4);
-    accumO_v3 = _mm256_load_pd(mv + 8);
-    accumO_v4 = _mm256_load_pd(mv + 12);
-  }
-  else {
-    accumO_v1 = _mm256_setzero_pd();
-    accumO_v2 = _mm256_setzero_pd();
-    accumO_v3 = _mm256_setzero_pd();
-    accumO_v4 = _mm256_setzero_pd();
-  }
-#endif
-#else
-  if (TILED) {
-    for(idx_t r=0; r < NFACTORS; ++r) {
-      accumO[r] = mv[r];
-    }
-  }
-  else {
-    for(idx_t r=0; r < NFACTORS; ++r) {
-      accumO[r] = 0;
-    }
-  }
-#endif
 
   /* foreach fiber in slice */
   for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
@@ -599,86 +862,23 @@ static void p_csf_mttkrp_root3_kernel_(
     idx_t const jjfirst  = fptr[f];
     val_t const vfirst   = vals[jjfirst];
     val_t const * const restrict bv = bvals + (inds[jjfirst] * NFACTORS);
-#ifdef SPLATT_INTRINSIC
-#ifdef __AVX512F__
-    __m512d accumF_v1 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv));
-    __m512d accumF_v2 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv + 8));
 
-    /* foreach nnz in fiber */
-    for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
-      val_t const v = vals[jj];
-      val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
-      accumF_v1 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv), accumF_v1);
-      accumF_v2 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv + 8), accumF_v2);
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+    for(int i=0; i < NFACTORS/SPLATT_VLEN; ++i) {
+      accumF[i] = _MM_MUL(_MM_SET1(vfirst), _MM_LOAD(bv + i*SPLATT_VLEN));
     }
+
+    p_csf_process_fiber_<NFACTORS>(accumF, bvals, fptr[f]+1, fptr[f+1], inds, vals);
 
     /* scale inner products by row of A and update to M */
     val_t const * const restrict av = avals  + (fids[f] * NFACTORS);
-    accumO_v1 = _mm512_fmadd_pd(accumF_v1, _mm512_load_pd(av), accumO_v1);
-    accumO_v2 = _mm512_fmadd_pd(accumF_v2, _mm512_load_pd(av + 8), accumO_v2);
-#else
-    __m256d accumF_v1 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv));
-    __m256d accumF_v2 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 4));
-    __m256d accumF_v3 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 8));
-    __m256d accumF_v4 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 12));
-
-    /* foreach nnz in fiber */
-    for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
-      val_t const v = vals[jj];
-      val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
-      accumF_v1 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv), accumF_v1);
-      accumF_v2 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 4), accumF_v2);
-      accumF_v3 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 8), accumF_v3);
-      accumF_v4 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 12), accumF_v4);
-    }
-
-    /* scale inner products by row of A and update to M */
-    val_t const * const restrict av = avals  + (fids[f] * NFACTORS);
-    accumO_v1 = _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(av), accumO_v1);
-    accumO_v2 = _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(av + 4), accumO_v2);
-    accumO_v3 = _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(av + 8), accumO_v3);
-    accumO_v4 = _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(av + 12), accumO_v4);
-#endif
-#else // SPLATT_INTRINSIC
-    __assume_aligned(accumF, 64);
-    __assume_aligned(bv, 64);
-    for(idx_t r=0; r < NFACTORS; ++r) {
-      accumF[r] = vfirst * bv[r];
-    }
-
-    /* foreach nnz in fiber */
-    for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
-      val_t const v = vals[jj];
-      val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
-      for(idx_t r=0; r < NFACTORS; ++r) {
-        accumF[r] += v * bv[r];
-      }
-    }
-
-    /* scale inner products by row of A and update to M */
-    val_t const * const restrict av = avals  + (fids[f] * NFACTORS);
-    for(idx_t r=0; r < NFACTORS; ++r) {
-      accumO[r] += accumF[r] * av[r];
-    }
-#endif // SPLATT_INTRINSIC
+    p_add_hada_<NFACTORS>(accumO, accumF, av);
   }
 
-#ifdef SPLATT_INTRINSIC
-#ifdef __AVX512F__
-  _mm512_stream_pd(mv, accumO_v1);
-  _mm512_stream_pd(mv + 8, accumO_v2);
-#else
-  _mm256_stream_pd(mv, accumO_v1);
-  _mm256_stream_pd(mv + 4, accumO_v2);
-  _mm256_stream_pd(mv + 8, accumO_v3);
-  _mm256_stream_pd(mv + 12, accumO_v4);
-#endif
-#else
-#pragma vector nontemporal(mv)
-  for(idx_t r=0; r < NFACTORS; ++r) {
-    mv[r] = accumO[r];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+  for(int i=0; i < NFACTORS/SPLATT_VLEN; ++i) {
+    _MM_STREAM(mv + i*SPLATT_VLEN, accumO[i]);
   }
-#endif
 }
 
 static void p_csf_mttkrp_root_tiled3(
@@ -705,7 +905,6 @@ static void p_csf_mttkrp_root_tiled3(
   int tid = omp_get_thread_num();
 
   val_t * const restrict accumF = (val_t *) thds[tid].scratch[0];
-  val_t * const restrict accumO = (val_t *) thds[tid].scratch[2];
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
@@ -716,7 +915,7 @@ static void p_csf_mttkrp_root_tiled3(
       val_t * const restrict mv = ovals + (fid * nfactors);
 
       p_csf_mttkrp_root3_kernel_<16, true>(
-        vals, sptr, fptr, fids, inds, avals, bvals, mv, accumF, accumO, s);
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, s);
     }
   }
   else
@@ -786,9 +985,6 @@ static void p_csf_mttkrp_root3_(
   int tid = omp_get_thread_num();
   int nthreads = omp_get_num_threads();
 
-  val_t * const restrict accumF = (val_t *) thds[tid].scratch[0];
-  val_t * const restrict accumO = (val_t *) thds[tid].scratch[2];
-
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
 #ifdef SPLATT_MEASURE_LOAD_BALANCE
@@ -798,8 +994,8 @@ static void p_csf_mttkrp_root3_(
 
   if (sids == NULL) {
     // When we're working on all slices, use static schedule
-#define SPLATT_USE_STATIC_SCHEDULE
-#ifdef SPLATT_USE_STATIC_SCHEDULE
+#define SPLATT_MTTKRP_USE_STATIC_SCHEDULE
+#ifdef SPLATT_MTTKRP_USE_STATIC_SCHEDULE
     int nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
     int count = nslices;
     int first = 0;
@@ -839,7 +1035,7 @@ static void p_csf_mttkrp_root3_(
       idx_t fid = s;
       val_t *mv = ovals + (fid * NFACTORS);
       p_csf_mttkrp_root3_kernel_<NFACTORS>(
-        vals, sptr, fptr, fids, inds, avals, bvals, mv, accumF, accumO, s);
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, s);
     }
 #else
     #pragma omp for schedule(dynamic, 16) nowait
@@ -847,7 +1043,7 @@ static void p_csf_mttkrp_root3_(
       idx_t fid = s;
       val_t *mv = ovals + (fid * NFACTORS);
       p_csf_mttkrp_root3_kernel_<NFACTORS>(
-        vals, sptr, fptr, fids, inds, avals, bvals, mv, accumF, accumO, s);
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, s);
     }
 #endif
   }
@@ -863,7 +1059,7 @@ static void p_csf_mttkrp_root3_(
       idx_t fid = sids[s];
       val_t *mv = ovals + (fid * NFACTORS);
       p_csf_mttkrp_root3_kernel_<NFACTORS, true>(
-        vals, sptr, fptr, fids, inds, avals, bvals, mv, accumF, accumO, s);
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, s);
     }
   }
 
@@ -958,10 +1154,16 @@ static void p_csf_mttkrp_internal3_kernel_(
   const idx_t *sptr, const idx_t *fptr,
   const fidx_t *fids, const fidx_t *inds,
   const val_t *rv, const val_t *bvals, val_t *ovals,
-  val_t *accumF,
   idx_t s)
 {
   assert(NFACTORS == 16 && sizeof(val_t) == 8);
+
+  __declspec(aligned(64)) SPLATT_SIMDFPTYPE accumF[NFACTORS/SPLATT_VLEN], rv_v[NFACTORS/SPLATT_VLEN];
+
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+  for(int i=0; i < NFACTORS/SPLATT_VLEN; ++i) {
+    rv_v[i] = _MM_LOAD(rv + i*SPLATT_VLEN);
+  }
 
   /* foreach fiber in slice */
   for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
@@ -969,206 +1171,23 @@ static void p_csf_mttkrp_internal3_kernel_(
     idx_t const jjfirst  = fptr[f];
     val_t const vfirst   = vals[jjfirst];
     val_t const * const restrict bv = bvals + (inds[jjfirst] * NFACTORS);
-#ifdef SPLATT_INTRINSIC
-#ifdef __AVX512F__
-    __m512d accumF_v1 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv));
-    __m512d accumF_v2 = _mm512_mul_pd(_mm512_set1_pd(vfirst), _mm512_load_pd(bv + 8));
-#else
-    __m256d accumF_v1 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv));
-    __m256d accumF_v2 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 4));
-    __m256d accumF_v3 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 8));
-    __m256d accumF_v4 = _mm256_mul_pd(_mm256_set1_pd(vfirst), _mm256_load_pd(bv + 12));
-#endif
 
-    /* foreach nnz in fiber */
-    for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
-      val_t const v = vals[jj];
-      val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
-#ifdef __AVX512F__
-      accumF_v1 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv), accumF_v1);
-      accumF_v2 = _mm512_fmadd_pd(_mm512_set1_pd(v), _mm512_load_pd(bv + 8), accumF_v2);
-#else
-      accumF_v1 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv), accumF_v1);
-      accumF_v2 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 4), accumF_v2);
-      accumF_v3 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 8), accumF_v3);
-      accumF_v4 = _mm256_fmadd_pd(_mm256_set1_pd(v), _mm256_load_pd(bv + 12), accumF_v4);
-#endif
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+    for(int i=0; i < NFACTORS/SPLATT_VLEN; ++i) {
+      accumF[i] = _MM_MUL(_MM_SET1(vfirst), _MM_LOAD(bv + i*SPLATT_VLEN));
     }
+
+    p_csf_process_fiber_<NFACTORS>(accumF, bvals, fptr[f]+1, fptr[f+1], inds, vals);
 
     /* scale inner products by row of A and update to M */
     fidx_t oid = fids[f];
     val_t * const restrict ov = ovals  + (oid * NFACTORS);
     if (TILED) {
-#ifdef __AVX512F__
-        _mm512_store_pd(ov, _mm512_fmadd_pd(accumF_v1, _mm512_load_pd(rv), _mm512_load_pd(ov)));
-        _mm512_store_pd(ov + 8, _mm512_fmadd_pd(accumF_v2, _mm512_load_pd(rv + 8), _mm512_load_pd(ov + 8)));
-#else
-        _mm256_store_pd(ov, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(ov)));
-        _mm256_store_pd(ov + 4, _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(rv + 4), _mm256_load_pd(ov + 4)));
-        _mm256_store_pd(ov + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(ov + 8)));
-        _mm256_store_pd(ov + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(ov + 12)));
-#endif
-    } // TILED
-    else {
-      if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
-#ifdef __AVX512F__
-        _mm512_store_pd(ov, _mm512_fmadd_pd(accumF_v1, _mm512_load_pd(rv), _mm512_load_pd(ov)));
-        _mm512_store_pd(ov + 8, _mm512_fmadd_pd(accumF_v2, _mm512_load_pd(rv + 8), _mm512_load_pd(ov + 8)));
-#else
-        _mm256_store_pd(ov, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(ov)));
-        _mm256_store_pd(ov + 4, _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(rv + 4), _mm256_load_pd(ov + 4)));
-        _mm256_store_pd(ov + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(ov + 8)));
-        _mm256_store_pd(ov + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(ov + 12)));
-#endif
-        _xend();
-        continue;
-      }
-
-      if(SPLATT_SYNC_CAS == SYNC_TYPE) {
-        __m128d old_ov, new_ov, acc;
-
-        do {
-          old_ov = _mm_load_pd(ov);
-#ifdef __AVX512F__
-          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 0));
-#else
-          acc = _mm256_extractf128_pd(accumF_v1, 0);
-#endif
-          new_ov = _mm_fmadd_pd(_mm_load_pd(rv), acc, old_ov);
-        } while (!__sync_bool_compare_and_swap((__int128 *)ov, *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-#ifndef SPLATT_EMULATE_VECTOR_CAS
-        do {
-          old_ov = _mm_load_pd(ov + 2);
-#ifdef __AVX512F__
-          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 1));
-#else
-          acc = _mm256_extractf128_pd(accumF_v1, 1);
-#endif
-          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 2), acc, old_ov);
-        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 2), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-
-        do {
-          old_ov = _mm_load_pd(ov + 4);
-#ifdef __AVX512F__
-          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 2));
-#else
-          acc = _mm256_extractf128_pd(accumF_v2, 0);
-#endif
-          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 4), acc, old_ov);
-        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 4), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-        do {
-          old_ov = _mm_load_pd(ov + 6);
-#ifdef __AVX512F__
-          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 3));
-#else
-          acc = _mm256_extractf128_pd(accumF_v2, 1);
-#endif
-          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 6), acc, old_ov);
-        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 6), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-#endif
-
-        do {
-          old_ov = _mm_load_pd(ov + 8);
-#ifdef __AVX512F__
-          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 0));
-#else
-          acc = _mm256_extractf128_pd(accumF_v3, 0);
-#endif
-          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 8), acc, old_ov);
-        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 8), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-#ifndef SPLATT_EMULATE_VECTOR_CAS
-        do {
-          old_ov = _mm_load_pd(ov + 10);
-#ifdef __AVX512F__
-          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 1));
-#else
-          acc = _mm256_extractf128_pd(accumF_v3, 1);
-#endif
-          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 10), acc, old_ov);
-        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 10), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-
-        do {
-          old_ov = _mm_load_pd(ov + 12);
-#ifdef __AVX512F__
-          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 2));
-#else
-          acc = _mm256_extractf128_pd(accumF_v4, 0);
-#endif
-          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 12), acc, old_ov);
-        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 12), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-        do {
-          old_ov = _mm_load_pd(ov + 14);
-#ifdef __AVX512F__
-          acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 3));
-#else
-          acc = _mm256_extractf128_pd(accumF_v4, 1);
-#endif
-          new_ov = _mm_fmadd_pd(_mm_load_pd(rv + 14), acc, old_ov);
-        } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 14), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-#endif
-      } // SPLATT_SYNC_CAS
-      else {
-        splatt_set_lock<SYNC_TYPE>(oid);
-#ifdef __AVX512F__
-        _mm512_store_pd(ov, _mm512_fmadd_pd(accumF_v1, _mm512_load_pd(rv), _mm512_load_pd(ov)));
-        _mm512_store_pd(ov + 8, _mm512_fmadd_pd(accumF_v2, _mm512_load_pd(rv + 8), _mm512_load_pd(ov + 8)));
-#else
-        _mm256_store_pd(ov, _mm256_fmadd_pd(accumF_v1, _mm256_load_pd(rv), _mm256_load_pd(ov)));
-        _mm256_store_pd(ov + 4, _mm256_fmadd_pd(accumF_v2, _mm256_load_pd(rv + 4), _mm256_load_pd(ov + 4)));
-        _mm256_store_pd(ov + 8, _mm256_fmadd_pd(accumF_v3, _mm256_load_pd(rv + 8), _mm256_load_pd(ov + 8)));
-        _mm256_store_pd(ov + 12, _mm256_fmadd_pd(accumF_v4, _mm256_load_pd(rv + 12), _mm256_load_pd(ov + 12)));
-#endif
-        splatt_unset_lock<SYNC_TYPE>(oid);
-      }
-    } // !TILED
-#else // SPLATT_INTRINSIC
-    for(idx_t r=0; r < NFACTORS; ++r) {
-      accumF[r] = vfirst * bv[r];
+      p_add_hada_<NFACTORS>(ov, accumF, rv_v);
     }
-
-    /* foreach nnz in fiber */
-    for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
-      val_t const v = vals[jj];
-      val_t const * const restrict bv = bvals + (inds[jj] * NFACTORS);
-      for(idx_t r=0; r < NFACTORS; ++r) {
-        accumF[r] += v * bv[r];
-      }
-    }
-
-    /* write to fiber row */
-    val_t * const restrict ov = ovals  + (fids[f] * NFACTORS);
-    if (TILED) {
-      for(idx_t r=0; r < NFACTORS; ++r) {
-        ov[r] += rv[r] * accumF[r];
-      }
-    } // TILED
     else {
-      if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
-        for(idx_t r=0; r < NFACTORS; ++r) {
-          ov[r] += rv[r] * accumF[r];
-        }
-        _xend();
-        continue;
-      }
-
-      if(SPLATT_SYNC_CAS == SYNC_TYPE) {
-        for(idx_t r=0; r < NFACTORS; ++r) {
-          double old_ov, new_ov;
-          do {
-            old_ov = ov[r];
-            new_ov = old_ov + rv[r]*accumF[r];
-          } while (!__sync_bool_compare_and_swap((long long *)(ov + r), *((long long *)(&old_ov)), *((long long *)(&new_ov))));
-        }
-      }
-      else {
-        splatt_set_lock<SYNC_TYPE>(fids[f]);
-        for(idx_t r=0; r < NFACTORS; ++r) {
-          ov[r] += rv[r] * accumF[r];
-        }
-        splatt_unset_lock<SYNC_TYPE>(fids[f]);
-      }
-    } // !TILED
-#endif // SPLATT_INTRINSIC
+      p_add_hada_lock_<NFACTORS, SYNC_TYPE>(ov, accumF, rv_v, oid);
+    }
   } /* for each slice */
 }
 
@@ -1197,8 +1216,6 @@ static void p_csf_mttkrp_internal3_(
   int tid = omp_get_thread_num();
   int nthreads = omp_get_num_threads();
   
-  val_t * const restrict accumF = (val_t *) thds[tid].scratch[0];
-
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
 #ifdef SPLATT_MEASURE_LOAD_BALANCE
@@ -1241,7 +1258,7 @@ static void p_csf_mttkrp_internal3_(
       val_t const * const restrict rv = avals + (fid * NFACTORS);
 
       p_csf_mttkrp_internal3_kernel_<NFACTORS, SYNC_TYPE>(
-        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
     }
   }
   else {
@@ -1253,7 +1270,7 @@ static void p_csf_mttkrp_internal3_(
       val_t const * const restrict rv = avals + (fid * NFACTORS);
 
       p_csf_mttkrp_internal3_kernel_<NFACTORS, SYNC_TYPE>(
-        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
     }
   }
 
@@ -1342,6 +1359,11 @@ static void p_csf_mttkrp_internal3(
         }
         splatt_unset_lock<SYNC_TYPE>(fids[f]);
       }
+
+#ifdef SPLATT_COUNT_REDUCTION
+#pragma omp atomic
+      mttkrp_reduction += sptr[s+1] - sptr[s];
+#endif
     }
   }
 }
@@ -1352,197 +1374,29 @@ static void p_csf_mttkrp_leaf3_kernel_(
   const idx_t *sptr, const idx_t *fptr,
   const fidx_t *fids, const fidx_t *inds,
   const val_t *rv, const val_t *bvals, val_t *ovals,
-  val_t *accumF,
   idx_t s)
 {
   assert(NFACTORS == 16 && sizeof(val_t) == 8);
+
+  __declspec(aligned(64)) SPLATT_SIMDFPTYPE accumF[NFACTORS/SPLATT_VLEN], rv_v[NFACTORS/SPLATT_VLEN];
+
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+  for(int i=0; i < NFACTORS/SPLATT_VLEN; ++i) {
+    rv_v[i] = _MM_LOAD(rv + i*SPLATT_VLEN);
+  }
 
   /* foreach fiber in slice */
   for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
     /* fill fiber with hada */
     val_t const * const restrict av = bvals  + (fids[f] * NFACTORS);
-#ifdef SPLATT_INTRINSIC
-#ifdef __AVX512F__
-    __m512d accumF_v1 = _mm512_mul_pd(_mm512_load_pd(rv), _mm512_load_pd(av));
-    __m512d accumF_v2 = _mm512_mul_pd(_mm512_load_pd(rv + 8), _mm512_load_pd(av + 8));
-#else
-    __m256d accumF_v1 = _mm256_mul_pd(_mm256_load_pd(rv), _mm256_load_pd(av));
-    __m256d accumF_v2 = _mm256_mul_pd(_mm256_load_pd(rv + 4), _mm256_load_pd(av + 4));
-    __m256d accumF_v3 = _mm256_mul_pd(_mm256_load_pd(rv + 8), _mm256_load_pd(av + 8));
-    __m256d accumF_v4 = _mm256_mul_pd(_mm256_load_pd(rv + 12), _mm256_load_pd(av + 12));
-#endif
 
-    /* foreach nnz in fiber, scale with hada and write to ovals */
-    for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
-      val_t const v = vals[jj];
-      val_t * const restrict ov = ovals + (inds[jj] * NFACTORS);
-      if (TILED) {
-#ifdef __AVX512F__
-        _mm512_store_pd(ov, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v1, _mm512_load_pd(ov)));
-        _mm512_store_pd(ov + 8, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v2, _mm512_load_pd(ov + 8)));
-#else
-        _mm256_store_pd(ov, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v1, _mm256_load_pd(ov)));
-        _mm256_store_pd(ov + 4, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v2, _mm256_load_pd(ov + 4)));
-        _mm256_store_pd(ov + 8, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v3, _mm256_load_pd(ov + 8)));
-        _mm256_store_pd(ov + 12, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v4, _mm256_load_pd(ov + 12)));
-#endif
-      }
-      else {
-        if(SPLATT_SYNC_RTM == SYNC_TYPE && _xbegin() == _XBEGIN_STARTED) {
-#ifdef __AVX512F__
-          _mm512_store_pd(ov, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v1, _mm512_load_pd(ov)));
-          _mm512_store_pd(ov + 8, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v2, _mm512_load_pd(ov + 8)));
-#else
-          _mm256_store_pd(ov, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v1, _mm256_load_pd(ov)));
-          _mm256_store_pd(ov + 4, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v2, _mm256_load_pd(ov + 4)));
-          _mm256_store_pd(ov + 8, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v3, _mm256_load_pd(ov + 8)));
-          _mm256_store_pd(ov + 12, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v4, _mm256_load_pd(ov + 12)));
-#endif
-          _xend();
-          continue;
-        }
-
-        if(SPLATT_SYNC_CAS == SYNC_TYPE) {
-          __m128d old_ov, new_ov, acc;
-
-          do {
-            old_ov = _mm_load_pd(ov);
-#ifdef __AVX512F__
-            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 0));
-#else
-            acc = _mm256_extractf128_pd(accumF_v1, 0);
-#endif
-            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
-          } while (!__sync_bool_compare_and_swap((__int128 *)ov, *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-#ifndef SPLATT_EMULATE_VECTOR_CAS
-          do {
-            old_ov = _mm_load_pd(ov + 2);
-#ifdef __AVX512F__
-            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 1));
-#else
-            acc = _mm256_extractf128_pd(accumF_v1, 1);
-#endif
-            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
-          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 2), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-
-          do {
-            old_ov = _mm_load_pd(ov + 4);
-#ifdef __AVX512F__
-            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 2));
-#else
-            acc = _mm256_extractf128_pd(accumF_v2, 0);
-#endif
-            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
-          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 4), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-          do {
-            old_ov = _mm_load_pd(ov + 6);
-#ifdef __AVX512F__
-            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v1), 3));
-#else
-            acc = _mm256_extractf128_pd(accumF_v2, 1);
-#endif
-            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
-          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 6), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-#endif
-
-          do {
-            old_ov = _mm_load_pd(ov + 8);
-#ifdef __AVX512F__
-            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 0));
-#else
-            acc = _mm256_extractf128_pd(accumF_v3, 0);
-#endif
-            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
-          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 8), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-#ifndef SPLATT_EMULATE_VECTOR_CAS
-          do {
-            old_ov = _mm_load_pd(ov + 10);
-#ifdef __AVX512F__
-            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 1));
-#else
-            acc = _mm256_extractf128_pd(accumF_v3, 1);
-#endif
-            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
-          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 10), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-
-          do {
-            old_ov = _mm_load_pd(ov + 12);
-#ifdef __AVX512F__
-            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 2));
-#else
-            acc = _mm256_extractf128_pd(accumF_v4, 0);
-#endif
-            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
-          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 12), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-          do {
-            old_ov = _mm_load_pd(ov + 14);
-#ifdef __AVX512F__
-            acc = _mm_castps_pd(_mm512_extractf32x4_ps(_mm512_castpd_ps(accumF_v2), 3));
-#else
-            acc = _mm256_extractf128_pd(accumF_v4, 1);
-#endif
-            new_ov = _mm_fmadd_pd(_mm_set1_pd(v), acc, old_ov);
-          } while (!__sync_bool_compare_and_swap((__int128 *)(ov + 14), *((__int128 *)&old_ov), *((__int128 *)&new_ov)));
-#endif
-        } /* SPLATT_SYNC_CAS */
-        else {
-          splatt_set_lock<SYNC_TYPE>(inds[jj]);
-#ifdef __AVX512F__
-          _mm512_store_pd(ov, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v1, _mm512_load_pd(ov)));
-          _mm512_store_pd(ov + 8, _mm512_fmadd_pd(_mm512_set1_pd(v), accumF_v2, _mm512_load_pd(ov + 8)));
-#else
-          _mm256_store_pd(ov, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v1, _mm256_load_pd(ov)));
-          _mm256_store_pd(ov + 4, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v2, _mm256_load_pd(ov + 4)));
-          _mm256_store_pd(ov + 8, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v3, _mm256_load_pd(ov + 8)));
-          _mm256_store_pd(ov + 12, _mm256_fmadd_pd(_mm256_set1_pd(v), accumF_v4, _mm256_load_pd(ov + 12)));
-#endif
-          splatt_unset_lock<SYNC_TYPE>(inds[jj]);
-        }
-      } // !TILED
-    } /* for each fiber*/
-
-#else // SPLATT_INTRINSIC
-    for(idx_t r=0; r < NFACTORS; ++r) {
-      accumF[r] = rv[r] * av[r];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+    for(int i=0; i < NFACTORS/SPLATT_VLEN; ++i) {
+      accumF[i] = _MM_MUL(rv_v[i], _MM_LOAD(av + i*SPLATT_VLEN));
     }
 
     /* foreach nnz in fiber, scale with hada and write to ovals */
-    for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
-      val_t const v = vals[jj];
-      val_t * const restrict ov = ovals + (inds[jj] * NFACTORS);
-      if (TILED) {
-        for(idx_t r=0; r < NFACTORS; ++r) {
-          ov[r] += v * accumF[r];
-        }
-      }
-      else {
-        if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
-          for(idx_t r=0; r < NFACTORS; ++r) {
-            ov[r] += v * accumF[r];
-          }
-          _xend();
-          continue;
-        }
-
-        if(SPLATT_SYNC_CAS == SYNC_TYPE) {
-          for(idx_t r=0; r < NFACTORS; ++r) {
-            double old_ov, new_ov;
-            do {
-              old_ov = ov[r];
-              new_ov = old_ov + v*accumF[r];
-            } while (!__sync_bool_compare_and_swap((long long *)(ov + r), *((long long *)(&old_ov)), *((long long *)(&new_ov))));
-          }
-        }
-        else {
-          splatt_set_lock<SYNC_TYPE>(inds[jj]);
-          for(idx_t r=0; r < NFACTORS; ++r) {
-            ov[r] += v * accumF[r];
-          }
-          splatt_unset_lock<SYNC_TYPE>(inds[jj]);
-        }
-      } // !TILED
-    } /* for each fiber */
-#endif // SPLATT_INTRINSIC
+    p_csf_process_fiber_lock_<NFACTORS, SYNC_TYPE>(ovals, accumF, fptr[f], fptr[f+1], inds, vals);
   }
 }
 
@@ -1570,8 +1424,6 @@ static void p_csf_mttkrp_leaf3_(
 
   int nthreads = omp_get_num_threads();
   int tid = omp_get_thread_num();
-
-  val_t * const restrict accumF = (val_t *) thds[tid].scratch[0];
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
@@ -1615,7 +1467,7 @@ static void p_csf_mttkrp_leaf3_(
       val_t const * const restrict rv = avals + (fid * NFACTORS);
 
       p_csf_mttkrp_leaf3_kernel_<NFACTORS, SYNC_TYPE>(
-        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
     }
   }
   else {
@@ -1627,7 +1479,7 @@ static void p_csf_mttkrp_leaf3_(
       val_t const * const restrict rv = avals + (fid * NFACTORS);
 
       p_csf_mttkrp_leaf3_kernel_<NFACTORS, SYNC_TYPE>(
-        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
     }
   }
 
@@ -1707,6 +1559,11 @@ static void p_csf_mttkrp_leaf3(
           splatt_unset_lock<SYNC_TYPE>(inds[jj]);
         }
       }
+
+#ifdef SPLATT_COUNT_REDUCTION
+#pragma omp atomic
+      mttkrp_reduction += sptr[s+1] - sptr[s];
+#endif
     }
   }
 }
@@ -1823,20 +1680,18 @@ static void p_csf_mttkrp_root(
 
       assert(fid < mats[MAX_NMODES]->I);
 
-      if(16 == nfactors) {
-        p_propagate_up_<16>(buf[0], buf, idxstack, 0, s, fp, fids,
-            vals, mvals, nmodes);
-      }
-      else {
-        p_propagate_up(buf[0], buf, idxstack, 0, s, fp, fids,
-            vals, mvals, nmodes, nfactors);
-      }
+      p_propagate_up(buf[0], buf, idxstack, 0, s, fp, fids,
+          vals, mvals, nmodes, nfactors);
 
       val_t * const restrict orow = ovals + (fid * nfactors);
       val_t const * const restrict obuf = buf[0];
       for(idx_t f=0; f < nfactors; ++f) {
         orow[f] += obuf[f];
       }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+      mttkrp_flops += nfactors;
+#endif
     } /* end foreach outer slice */
   }
   else {
@@ -1855,14 +1710,8 @@ static void p_csf_mttkrp_root(
 
       assert(fid < mats[MAX_NMODES]->I);
 
-      if(16 == nfactors) {
-        p_propagate_up_<16>(buf[0], buf, idxstack, 0, s, fp, fids,
-            vals, mvals, nmodes);
-      }
-      else {
-        p_propagate_up(buf[0], buf, idxstack, 0, s, fp, fids,
-            vals, mvals, nmodes, nfactors);
-      }
+      p_propagate_up(buf[0], buf, idxstack, 0, s, fp, fids,
+          vals, mvals, nmodes, nfactors);
 
       val_t * const restrict orow = ovals + (fid * nfactors);
       val_t const * const restrict obuf = buf[0];
@@ -1872,6 +1721,105 @@ static void p_csf_mttkrp_root(
 #ifdef SPLATT_COUNT_FLOP
 #pragma omp atomic
       mttkrp_flops += nfactors;
+#endif
+    } /* end foreach outer slice */
+  }
+}
+
+
+template<int NFACTORS>
+static void p_csf_mttkrp_root_(
+  splatt_csf const * const ct,
+  idx_t const tile_id,
+  matrix_t ** mats,
+  thd_info * const thds)
+{
+  /* extract tensor structures */
+  idx_t const nmodes = ct->nmodes;
+  val_t const * const vals = ct->pt[tile_id].vals;
+
+  /* empty tile, just return */
+  if(vals == NULL) {
+    return;
+  }
+
+  if(nmodes == 3) {
+    p_csf_mttkrp_root3(ct, tile_id, mats, thds);
+    return;
+  }
+
+  idx_t const * const * const restrict fp
+      = (idx_t const * const *) ct->pt[tile_id].fptr;
+  fidx_t const * const * const restrict fids
+      = (fidx_t const * const *) ct->pt[tile_id].fids;
+
+  val_t * mvals[MAX_NMODES];
+  SPLATT_SIMDFPTYPE * buf[MAX_NMODES];
+  idx_t idxstack[MAX_NMODES];
+
+  int const tid = omp_get_thread_num();
+  for(idx_t m=0; m < nmodes; ++m) {
+    mvals[m] = mats[ct->dim_perm[m]]->vals;
+    /* grab the next row of buf from thds */
+    buf[m] = (SPLATT_SIMDFPTYPE *)(((val_t *) thds[tid].scratch[2]) + (NFACTORS * m));
+    memset(buf[m], 0, NFACTORS * sizeof(val_t));
+  }
+
+  val_t * const ovals = mats[MAX_NMODES]->vals;
+
+  idx_t const nfibs = ct->pt[tile_id].nfibs[0];
+  assert(nfibs <= mats[MAX_NMODES]->I);
+
+  if(NULL == fids[0]) {
+    #pragma omp for schedule(dynamic, 16) nowait
+    for(idx_t s=0; s < nfibs; ++s) {
+      fidx_t const fid = s;
+
+      assert(fid < mats[MAX_NMODES]->I);
+
+      p_propagate_up_<NFACTORS>(buf[0], buf, idxstack, 0, s, fp, fids,
+          vals, mvals, nmodes);
+
+      val_t * const restrict orow = ovals + (fid * NFACTORS);
+      SPLATT_SIMDFPTYPE const * const restrict obuf = buf[0];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+        _MM_STORE(orow + f*SPLATT_VLEN, _MM_ADD(_MM_LOAD(orow + f*SPLATT_VLEN), obuf[f]));
+      }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+      mttkrp_flops += NFACTORS;
+#endif
+    } /* end foreach outer slice */
+  }
+  else {
+    int tid = omp_get_thread_num();
+    int nthreads = omp_get_num_threads();
+
+    idx_t const nrows = mats[MAX_NMODES]->I;
+    idx_t rows_per_thread = (nrows + nthreads - 1)/nthreads;
+    idx_t row_begin = SS_MIN(rows_per_thread*tid, nrows);
+    idx_t row_end = SS_MIN(row_begin + rows_per_thread, nrows);
+
+    idx_t sbegin = std::lower_bound(fids[0], fids[0] + nfibs, row_begin) - fids[0];
+
+    for(idx_t s=sbegin; s < nfibs && fids[0][s] < row_end; ++s) {
+      fidx_t const fid = fids[0][s];
+
+      assert(fid < mats[MAX_NMODES]->I);
+
+      p_propagate_up_<NFACTORS>(buf[0], buf, idxstack, 0, s, fp, fids,
+          vals, mvals, nmodes);
+
+      val_t * const restrict orow = ovals + (fid * NFACTORS);
+      SPLATT_SIMDFPTYPE const * const restrict obuf = buf[0];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+        _MM_STORE(orow + f*SPLATT_VLEN, _MM_ADD(_MM_LOAD(orow + f*SPLATT_VLEN), obuf[f]));
+      }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+      mttkrp_flops += NFACTORS;
 #endif
     } /* end foreach outer slice */
   }
@@ -1912,7 +1860,7 @@ static void p_csf_mttkrp_leaf_tiled3(
       val_t const * const restrict rv = avals + (fid * nfactors);
 
       p_csf_mttkrp_leaf3_kernel_<16, SPLATT_SYNC_NOSYNC, true>(
-        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
     }
   }
   else
@@ -1930,6 +1878,10 @@ static void p_csf_mttkrp_leaf_tiled3(
         for(idx_t r=0; r < nfactors; ++r) {
           accumF[r] = rv[r] * av[r];
         }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+        mttkrp_flops += nfactors;
+#endif
 
         /* foreach nnz in fiber, scale with hada and write to ovals */
         for(idx_t jj=fptr[f]; jj < fptr[f+1]; ++jj) {
@@ -1939,6 +1891,10 @@ static void p_csf_mttkrp_leaf_tiled3(
             ov[r] += v * accumF[r];
           }
         }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+        mttkrp_flops += 2*nfactors*(fptr[f+1] - fptr[f]);
+#endif
       }
     }
   }
@@ -2065,14 +2021,14 @@ static void p_csf_mttkrp_leaf_tiled_(
       = (fidx_t const * const *) ct->pt[tile_id].fids;
 
   val_t * mvals[MAX_NMODES];
-  val_t * buf[MAX_NMODES];
+  SPLATT_SIMDFPTYPE * buf[MAX_NMODES];
   idx_t idxstack[MAX_NMODES];
 
   int const tid = omp_get_thread_num();
   for(idx_t m=0; m < nmodes; ++m) {
     mvals[m] = mats[ct->dim_perm[m]]->vals;
     /* grab the next row of buf from thds */
-    buf[m] = ((val_t *) thds[tid].scratch[2]) + (NFACTORS * m);
+    buf[m] = (SPLATT_SIMDFPTYPE *)(((val_t *) thds[tid].scratch[2]) + (NFACTORS * m));
   }
   bool use_privatization = mttkrp_use_privatization(ct, mats, MAX_NMODES, opts);
   val_t * const ovals = use_privatization && tid > 0 ? (val_t *)thds[tid].scratch[1] : mats[MAX_NMODES]->vals;
@@ -2092,11 +2048,10 @@ static void p_csf_mttkrp_leaf_tiled_(
 
       /* first buf will always just be a matrix row */
       val_t const * const rootrow = mvals[0] + (fid*NFACTORS);
-      val_t * const rootbuf = buf[0];
-      __assume_aligned(rootrow, 64);
-      __assume_aligned(rootbuf, 64);
-      for(idx_t f=0; f < NFACTORS; ++f) {
-        rootbuf[f] = rootrow[f];
+      SPLATT_SIMDFPTYPE * const rootbuf = buf[0];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+        rootbuf[f] = _MM_LOAD(rootrow + f*SPLATT_VLEN);
       }
 
       idx_t depth = 0;
@@ -2137,11 +2092,10 @@ static void p_csf_mttkrp_leaf_tiled_(
 
       /* first buf will always just be a matrix row */
       val_t const * const rootrow = mvals[0] + (fid*NFACTORS);
-      val_t * const rootbuf = buf[0];
-      __assume_aligned(rootrow, 64);
-      __assume_aligned(rootbuf, 64);
-      for(idx_t f=0; f < NFACTORS; ++f) {
-        rootbuf[f] = rootrow[f];
+      SPLATT_SIMDFPTYPE * const rootbuf = buf[0];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+        rootbuf[f] = _MM_LOAD(rootrow + f*SPLATT_VLEN);
       }
 
       idx_t depth = 0;
@@ -2284,14 +2238,14 @@ static void p_csf_mttkrp_leaf_(
       = (fidx_t const * const *) ct->pt[tile_id].fids;
 
   val_t * mvals[MAX_NMODES];
-  val_t * buf[MAX_NMODES];
+  SPLATT_SIMDFPTYPE * buf[MAX_NMODES];
   idx_t idxstack[MAX_NMODES];
 
   int const tid = omp_get_thread_num();
   for(idx_t m=0; m < nmodes; ++m) {
     mvals[m] = mats[ct->dim_perm[m]]->vals;
     /* grab the next row of buf from thds */
-    buf[m] = ((val_t *) thds[tid].scratch[2]) + (NFACTORS * m);
+    buf[m] = (SPLATT_SIMDFPTYPE *)(((val_t *) thds[tid].scratch[2]) + (NFACTORS * m));
   }
 
   /* foreach outer slice */
@@ -2308,11 +2262,10 @@ static void p_csf_mttkrp_leaf_(
 
     /* first buf will always just be a matrix row */
     val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
-    val_t * const rootbuf = buf[0];
-    __assume_aligned(rootrow, 64);
-    __assume_aligned(rootbuf, 64);
-    for(idx_t f=0; f < NFACTORS; ++f) {
-      rootbuf[f] = rootrow[f];
+    SPLATT_SIMDFPTYPE * const rootbuf = buf[0];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+    for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+      rootbuf[f] = _MM_LOAD(rootrow + f*SPLATT_VLEN);
     }
 
     idx_t depth = 0;
@@ -2377,7 +2330,7 @@ static void p_csf_mttkrp_internal_tiled3(
       val_t const * const restrict rv = avals + (fid * nfactors);
 
       p_csf_mttkrp_internal3_kernel_<16, SPLATT_SYNC_NOSYNC, true>(
-        vals, sptr, fptr, fids, inds, rv, bvals, ovals, accumF, s);
+        vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
     }
   }
   else
@@ -2397,6 +2350,10 @@ static void p_csf_mttkrp_internal_tiled3(
         for(idx_t r=0; r < nfactors; ++r) {
           accumF[r] = vfirst * bv[r];
         }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+        mttkrp_flops += nfactors;
+#endif
 
         /* foreach nnz in fiber */
         for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
@@ -2406,12 +2363,20 @@ static void p_csf_mttkrp_internal_tiled3(
             accumF[r] += v * bv[r];
           }
         }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+        mttkrp_flops += 2*nfactors*(fptr[f+1] - fptr[f] - 1);
+#endif
 
         /* write to fiber row */
         val_t * const restrict ov = ovals  + (fids[f] * nfactors);
         for(idx_t r=0; r < nfactors; ++r) {
           ov[r] += rv[r] * accumF[r];
         }
+#ifdef SPLATT_COUNT_FLOP
+#pragma omp atomic
+        mttkrp_flops += 2*nfactors;
+#endif
       }
     }
   }
@@ -2537,14 +2502,14 @@ static void p_csf_mttkrp_internal_tiled_(
   idx_t outdepth = csf_mode_depth(mode, ct->dim_perm, nmodes);
 
   val_t * mvals[MAX_NMODES];
-  val_t * buf[MAX_NMODES];
+  SPLATT_SIMDFPTYPE * buf[MAX_NMODES];
   idx_t idxstack[MAX_NMODES];
 
   int const tid = omp_get_thread_num();
   for(idx_t m=0; m < nmodes; ++m) {
     mvals[m] = mats[ct->dim_perm[m]]->vals;
     /* grab the next row of buf from thds */
-    buf[m] = ((val_t *) thds[tid].scratch[2]) + (NFACTORS * m);
+    buf[m] = (SPLATT_SIMDFPTYPE *)(((val_t *) thds[tid].scratch[2]) + (NFACTORS * m));
     memset(buf[m], 0, NFACTORS * sizeof(val_t));
   }
   bool use_privatization = mttkrp_use_privatization(ct, mats, MAX_NMODES, opts);
@@ -2565,9 +2530,9 @@ static void p_csf_mttkrp_internal_tiled_(
 
       /* fill first buf */
       val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
-      __assume_aligned(buf[0], 64);
-      for(idx_t f=0; f < NFACTORS; ++f) {
-        buf[0][f] = rootrow[f];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+        buf[0][f] = _MM_LOAD(rootrow + f*SPLATT_VLEN);
       }
 
       /* process entire subtree */
@@ -2610,9 +2575,9 @@ static void p_csf_mttkrp_internal_tiled_(
 
       /* fill first buf */
       val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
-      __assume_aligned(buf[0], 64);
-      for(idx_t f=0; f < NFACTORS; ++f) {
-        buf[0][f] = rootrow[f];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+        buf[0][f] = _MM_LOAD(rootrow + f*SPLATT_VLEN);
       }
 
       /* process entire subtree */
@@ -2729,6 +2694,10 @@ static void p_csf_mttkrp_internal(
       p_add_hada_clear(outbuf, buf[outdepth], buf[outdepth-1], nfactors);
       splatt_unset_lock<SYNC_TYPE>(noderow);
 
+#ifdef SPLATT_COUNT_REDUCTION
+      ++mttkrp_reduction;
+#endif
+
       /* backtrack to next unfinished node */
       do {
         ++idxstack[depth];
@@ -2776,14 +2745,14 @@ static void p_csf_mttkrp_internal_(
   idx_t outdepth = csf_mode_depth(mode, ct->dim_perm, nmodes);
 
   val_t * mvals[MAX_NMODES];
-  val_t * buf[MAX_NMODES];
+  SPLATT_SIMDFPTYPE * buf[MAX_NMODES];
   idx_t idxstack[MAX_NMODES];
 
   int const tid = omp_get_thread_num();
   for(idx_t m=0; m < nmodes; ++m) {
     mvals[m] = mats[ct->dim_perm[m]]->vals;
     /* grab the next row of buf from thds */
-    buf[m] = ((val_t *) thds[tid].scratch[2]) + (NFACTORS * m);
+    buf[m] = (SPLATT_SIMDFPTYPE *)(((val_t *) thds[tid].scratch[2]) + (NFACTORS * m));
     memset(buf[m], 0, NFACTORS * sizeof(val_t));
   }
   val_t * const ovals = mats[MAX_NMODES]->vals;
@@ -2810,10 +2779,9 @@ static void p_csf_mttkrp_internal_(
 
       /* fill first buf */
       val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
-      __assume_aligned(buf[0], 64);
-      __assume_aligned(rootrow, 64);
-      for(idx_t f=0; f < NFACTORS; ++f) {
-        buf[0][f] = rootrow[f];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+        buf[0][f] = _MM_LOAD(rootrow + f*SPLATT_VLEN);
       }
 
       /* process entire subtree */
@@ -2847,102 +2815,26 @@ static void p_csf_mttkrp_internal_(
 
         val_t * const restrict outbuf = ovals + (noderow * NFACTORS);
         if(16 == NFACTORS) {
-          val_t * const restrict out = outbuf;
-          val_t * const restrict a = buf[outdepth];
-          val_t const * const restrict b = buf[outdepth-1];
+          p_add_hada_lock_<NFACTORS, SYNC_TYPE>(outbuf, buf[outdepth], buf[outdepth-1], noderow);
 
-          __assume_aligned(out, 64);
-          __assume_aligned(a, 64);
-          __assume_aligned(b, 64);
-
-          bool rtm_succeed = false;
-          if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
-            for(idx_t f=0; f < NFACTORS; ++f) {
-              out[f] += a[f]*b[f];
-            }
-            _xend();
-            rtm_succeed = true;
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+          for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+            buf[outdepth][f] = _MM_SETZERO();
           }
-
-          if(!rtm_succeed) {
-            if(SPLATT_SYNC_CAS == SYNC_TYPE) {
-              __m128d old_out, new_out, acc;
-
-              do {
-                old_out = _mm_load_pd(out);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a), _mm_load_pd(b), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)out, *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 2);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 2), _mm_load_pd(b + 2), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 2), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 4);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 4), _mm_load_pd(b + 4), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 4), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 6);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 6), _mm_load_pd(b + 6), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 6), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 8);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 8), _mm_load_pd(b + 8), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 8), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 10);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 10), _mm_load_pd(b + 10), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 10), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 12);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 12), _mm_load_pd(b + 12), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 12), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 14);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 14), _mm_load_pd(b + 14), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 14), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-            } /* SPLATT_SYNC_CAS */
-            else {
-#ifdef SPLATT_MEASURE_LOAD_BALANCE
-              unsigned long long lock_begin_time = __rdtsc();
-#endif
-              splatt_set_lock<SYNC_TYPE>(noderow);
-#ifdef SPLATT_MEASURE_LOAD_BALANCE
-              acquireTimes[tid*8] += __rdtsc() - lock_begin_time;
-#endif
-              for(idx_t f=0; f < NFACTORS; ++f) {
-                out[f] += a[f]*b[f];
-              }
-              splatt_unset_lock<SYNC_TYPE>(noderow);
-            }
-          }
-
-          for(idx_t f=0; f < NFACTORS; ++f) {
-            a[f] = 0;
-          }
-#ifdef SPLATT_COUNT_FLOP
-#pragma omp atomic
-          mttkrp_flops += 2*NFACTORS;
-#endif
-#ifdef SPLATT_COUNT_REDUCTION
-#pragma omp atomic
-          ++mttkrp_reduction;
-#endif
-#ifdef SPLATT_MEASURE_LOAD_BALANCE
-          hadaClearTimes[tid*8] += __rdtsc() - temp_timer;
-#endif
         }
         else {
           splatt_set_lock<SYNC_TYPE>(noderow);
           p_add_hada_clear_<NFACTORS>(outbuf, buf[outdepth], buf[outdepth-1]);
           splatt_unset_lock<SYNC_TYPE>(noderow);
+
+#ifdef SPLATT_COUNT_REDUCTION
+          ++mttkrp_reduction;
+#endif
         }
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        hadaClearTimes[tid*8] += __rdtsc() - temp_timer;
+#endif
 
         /* backtrack to next unfinished node */
         do {
@@ -2983,10 +2875,9 @@ static void p_csf_mttkrp_internal_(
 
       /* fill first buf */
       val_t const * const restrict rootrow = mvals[0] + (fid*NFACTORS);
-      __assume_aligned(buf[0], 64);
-      __assume_aligned(rootrow, 64);
-      for(idx_t f=0; f < NFACTORS; ++f) {
-        buf[0][f] = rootrow[f];
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+        buf[0][f] = _MM_LOAD(rootrow + f*SPLATT_VLEN);
       }
 
       /* process entire subtree */
@@ -3008,84 +2899,21 @@ static void p_csf_mttkrp_internal_(
 
         val_t * const restrict outbuf = ovals + (noderow * NFACTORS);
         if(16 == NFACTORS) {
-          val_t * const restrict out = outbuf;
-          val_t * const restrict a = buf[outdepth];
-          val_t const * const restrict b = buf[outdepth-1];
+          p_add_hada_lock_<NFACTORS, SYNC_TYPE>(outbuf, buf[outdepth], buf[outdepth-1], noderow);
 
-          __assume_aligned(out, 64);
-          __assume_aligned(a, 64);
-          __assume_aligned(b, 64);
-
-          bool rtm_succeed = false;
-          if(SPLATT_SYNC_RTM == SYNC_TYPE && _XBEGIN_STARTED == _xbegin()) {
-            for(idx_t f=0; f < NFACTORS; ++f) {
-              out[f] += a[f]*b[f];
-            }
-            _xend();
-            rtm_succeed = true;
-          }
-
-          if(!rtm_succeed) {
-            if(SPLATT_SYNC_CAS == SYNC_TYPE) {
-              __m128d old_out, new_out, acc;
-
-              do {
-                old_out = _mm_load_pd(out);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a), _mm_load_pd(b), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)out, *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 2);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 2), _mm_load_pd(b + 2), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 2), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 4);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 4), _mm_load_pd(b + 4), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 4), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 6);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 6), _mm_load_pd(b + 6), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 6), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 8);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 8), _mm_load_pd(b + 8), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 8), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 10);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 10), _mm_load_pd(b + 10), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 10), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 12);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 12), _mm_load_pd(b + 12), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 12), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-
-              do {
-                old_out = _mm_load_pd(out + 14);
-                new_out = _mm_fmadd_pd(_mm_load_pd(a + 14), _mm_load_pd(b + 14), old_out);
-              } while (!__sync_bool_compare_and_swap((__int128 *)(out + 14), *((__int128 *)&old_out), *((__int128 *)&new_out)));
-            } /* SPLATT_SYNC_CAS */
-            else {
-              splatt_set_lock<SYNC_TYPE>(noderow);
-              for(idx_t f=0; f < NFACTORS; ++f) {
-                out[f] += a[f]*b[f];
-              }
-              splatt_unset_lock<SYNC_TYPE>(noderow);
-            }
-          } /* !rtm_succeed */
-
-          for(idx_t f=0; f < NFACTORS; ++f) {
-            a[f] = 0;
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+          for(idx_t f=0; f < NFACTORS/SPLATT_VLEN; ++f) {
+            buf[outdepth][f] = _MM_SETZERO();
           }
         }
         else {
           splatt_set_lock<SYNC_TYPE>(noderow);
           p_add_hada_clear_<NFACTORS>(outbuf, buf[outdepth], buf[outdepth-1]);
           splatt_unset_lock<SYNC_TYPE>(noderow);
+
+#ifdef SPLATT_COUNT_REDUCTION
+          ++mttkrp_reduction;
+#endif
         }
 
         /* backtrack to next unfinished node */
@@ -3116,6 +2944,8 @@ static void p_root_decide(
   if (nmodes != 3 || tensor->which_tile != SPLATT_NOTILE || M->J != 16)
     par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
+  idx_t const nfactors = mats[0]->J;
+
 #ifdef SPLATT_COUNT_FLOP
   mttkrp_flops = 0; 
 #endif
@@ -3127,13 +2957,23 @@ static void p_root_decide(
     idx_t tid = 0;
     switch(tensor->which_tile) {
     case SPLATT_NOTILE:
-      p_csf_mttkrp_root(tensor, 0, mats, thds);
+      if(16 == nfactors) {
+        p_csf_mttkrp_root_<16>(tensor, 0, mats, thds);
+      }
+      else {
+        p_csf_mttkrp_root(tensor, 0, mats, thds);
+      }
       break;
     case SPLATT_DENSETILE:
       /* this mode may not be tiled due to minimum tiling depth */
       if(opts[SPLATT_OPTION_TILEDEPTH] > 0) {
         for(idx_t t=0; t < tensor->ntiles; ++t) {
-          p_csf_mttkrp_root(tensor, t, mats, thds);
+          if(16 == nfactors) {
+            p_csf_mttkrp_root_<16>(tensor, t, mats, thds);
+          }
+          else {
+            p_csf_mttkrp_root(tensor, t, mats, thds);
+          }
           //#pragma omp barrier
         }
       } else {
@@ -3595,7 +3435,6 @@ void mttkrp_csf(
     p_mttkrp_csf<SPLATT_SYNC_TTAS>(tensors, mats, mode, thds, opts);
     break; 
   case SPLATT_SYNC_RTM:
-    printf("%s:%d\n", __FILE__, __LINE__);
     p_mttkrp_csf<SPLATT_SYNC_RTM>(tensors, mats, mode, thds, opts);
     break; 
   case SPLATT_SYNC_CAS:
