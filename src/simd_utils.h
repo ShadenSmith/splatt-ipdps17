@@ -12,6 +12,7 @@
 #define _MM_ADD(a, b) _mm512_add_pd(a, b)
 #define _MM_MUL(a, b) _mm512_mul_pd(a, b)
 #define _MM_FMADD(a, b, c) _mm512_fmadd_pd(a, b, c)
+#define _MM_MAX(a, b) _mm512_max_pd(a, b)
 
 #define _MM_LOAD(a) _mm512_load_pd(a)
 #define _MM_STORE(a, b) _mm512_store_pd(a, b)
@@ -29,6 +30,7 @@
 #define _MM_ADD(a, b) _mm256_add_pd(a, b)
 #define _MM_MUL(a, b) _mm256_mul_pd(a, b)
 #define _MM_FMADD(a, b, c) _mm256_fmadd_pd(a, b, c)
+#define _MM_MAX(a, b) _mm256_max_pd(a, b)
 
 #define _MM_LOAD(a) _mm256_load_pd(a)
 #define _MM_STORE(a, b) _mm256_store_pd(a, b)
