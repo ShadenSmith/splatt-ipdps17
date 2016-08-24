@@ -7,6 +7,8 @@
 #include "matrix.h"
 #include "util.h"
 #include "timer.h"
+//#include "simd_utils.h"
+//#include <immintrin.h>
 #include <mkl.h>
 
 #include <math.h>
@@ -14,6 +16,8 @@
 
 #ifdef __AVX512F__
 //#define HBW_ALLOC
+  /* define this and run with "numactl -m 0" and MEMKIND_HBW_NODES=1
+   * to allocate factor matrices to MCDRAM */
 #endif
 #ifdef HBW_ALLOC
 #include <hbwmalloc.h>
@@ -86,6 +90,92 @@ static void p_mat_2norm(
   } /* end omp for */
 }
 
+#if 0
+template<int NFACTORS>
+static void p_mat_maxnorm_(
+  matrix_t * const A,
+  val_t * const restrict lambda,
+  rank_info * const rinfo,
+  thd_info * const thds)
+{
+  printf("%s:%d\n", __FILE__, __LINE__);
+  assert(NFACTORS*sizeof(val_t)%64 == 0);
+  assert(A->J == NFACTORS);
+
+  idx_t const I = A->I;
+  val_t * const restrict vals = A->vals;
+
+  #pragma omp parallel
+  {
+    int const tid = omp_get_thread_num();
+    SPLATT_SIMDFPTYPE * const mylambda = (SPLATT_SIMDFPTYPE *) thds[tid].scratch[0];
+    for(idx_t j=0; j < NFACTORS/SPLATT_VLEN; ++j) {
+      mylambda[j] = _MM_SETZERO();
+    }
+
+    #pragma omp for schedule(static)
+    for(idx_t i=0; i < I; ++i) {
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t j=0; j < NFACTORS/SPLATT_VLEN; ++j) {
+        mylambda[j] = _MM_MAX(mylambda[j], _MM_LOAD(vals + j*SPLATT_VLEN + i*NFACTORS));
+      }
+    }
+
+#pragma omp barrier
+
+    /* do reduction on partial maxes */
+    //thd_reduce(thds, 0, NFACTORS, REDUCE_MAX);
+
+    #pragma omp master
+    {
+      for(idx_t i=1; i < omp_get_num_threads(); ++i) {
+        for(idx_t j=0; j < NFACTORS; ++j) {
+          ((val_t *)mylambda)[j] = SS_MAX(((val_t *)mylambda)[j], ((val_t *)thds[i].scratch[0])[j]);
+        }
+      }
+#ifdef SPLATT_USE_MPI
+      /* now do an MPI reduction to get the global lambda */
+      timer_start(&timers[TIMER_MPI_NORM]);
+      timer_start(&timers[TIMER_MPI_IDLE]);
+      MPI_Barrier(rinfo->comm_3d);
+      timer_stop(&timers[TIMER_MPI_IDLE]);
+
+      timer_start(&timers[TIMER_MPI_COMM]);
+      MPI_Allreduce(mylambda, lambda, NFACTORS, SPLATT_MPI_VAL, MPI_MAX, rinfo->comm_3d);
+      timer_stop(&timers[TIMER_MPI_COMM]);
+      timer_stop(&timers[TIMER_MPI_NORM]);
+
+      for(idx_t j=0; j < NFACTORS; ++j) {
+        lambda[j] = SS_MAX(lambda[j], 1.);
+      }
+#else
+      for(idx_t j=0; j < NFACTORS; ++j) {
+        lambda[j] = SS_MAX(((val_t *)mylambda)[j], 1.);
+      }
+#endif
+    }
+
+    #pragma omp barrier
+
+    __declspec(aligned(64)) SPLATT_SIMDFPTYPE lambda_inv[NFACTORS/SPLATT_VLEN];
+    for(idx_t j=0; j < NFACTORS; ++j) {
+      ((val_t *)lambda_inv)[j] = 1/lambda[j];
+    }
+
+    /* do the normalization */
+    #pragma omp for schedule(static)
+    for(idx_t i=0; i < I; ++i) {
+#pragma unroll(NFACTORS/SPLATT_VLEN)
+      for(idx_t j=0; j < NFACTORS/SPLATT_VLEN; ++j) {
+        _MM_STORE(
+          vals + j*SPLATT_VLEN + i*NFACTORS,
+          _MM_MUL(_MM_LOAD(vals + j*SPLATT_VLEN + i*NFACTORS), lambda_inv[j]));
+      }
+    }
+  } /* end omp parallel */
+
+}
+#endif
 
 static void p_mat_maxnorm(
   matrix_t * const A,
@@ -372,9 +462,18 @@ void mat_aTa(
   idx_t const nthreads)
 {
   timer_start(&timers[TIMER_ATA]);
+#define SPLATT_USE_MKL
 #ifdef SPLATT_USE_MKL
-  cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, A->J, A->J, A->I, 1, A->vals, A->J, A->vals, A->J, 1, ret->vals, ret->J);
-  // can use dsyrk?
+  cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, A->J, A->J, A->I, 1, A->vals, A->J, A->vals, A->J, 0, ret->vals, ret->J);
+  /*char uplo = 'L';
+  char trans = 'N';
+  int N = A->J;
+  int K = A->I;
+  int lda = N;
+  int ldc = N;
+  val_t alpha = 1.;
+  val_t beta = 0.;
+  dsyrk(&uplo, &trans, &N, &K, &alpha, A->vals, &lda, &beta, ret->vals, &ldc);*/
 #else
   /* check matrix dimensions */
   assert(ret->I == ret->J);
@@ -431,7 +530,7 @@ void mat_aTa(
   timer_stop(&timers[TIMER_MPI_COMM]);
   timer_stop(&timers[TIMER_MPI_ATA]);
 #else
-  memcpy(ret->vals, (val_t *) thds[0].scratch[0], F * F * sizeof(val_t));
+  par_memcpy(ret->vals, (val_t *) thds[0].scratch[0], F * F * sizeof(val_t));
 #endif
 #endif
 
