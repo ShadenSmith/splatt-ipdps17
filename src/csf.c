@@ -15,6 +15,8 @@
 
 #ifdef __AVX512F__
 //#define HBW_ALLOC
+  /* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
+   * to allocate tensor data to DDR */
 #endif
 #ifdef HBW_ALLOC
 #include <hbwmalloc.h>

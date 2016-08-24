@@ -12,7 +12,9 @@
 #include <math.h>
 
 #ifdef __AVX512F__
-//#define HBW_ALLOC
+#define HBW_ALLOC
+  /* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
+   * to allocate sptensor data to DDR */
 #endif
 #ifdef HBW_ALLOC
 #include <hbwmalloc.h>
@@ -79,10 +81,9 @@ void tt_print_hist(sptensor_t const * const tt, int mode)
   for(idx_t n=0; n < tt->dims[mode]; ++n) {
     hist[n] = 0;
   }
-//#pragma omp parallel for
-  idx_t n;
-  for(n=0; n < tt->nnz; ++n) {
-//#pragma omp atomic
+#pragma omp parallel for
+  for(idx_t n=0; n < tt->nnz; ++n) {
+#pragma omp atomic
     hist[tt->ind[mode][n]]++;
   }
   for(idx_t n=0; n < tt->dims[mode]; ++n) {

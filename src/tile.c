@@ -11,7 +11,9 @@
 #include <omp.h>
 
 #ifdef __AVX512F__
-//#define HBW_ALLOC
+#define HBW_ALLOC
+  /* define this and run with "numactl -m 0" and MEMKIND_HBW_NODES=1
+   * to allocate factor matrices to MCDRAM */
 #endif
 #ifdef HBW_ALLOC
 #include <hbwmalloc.h>
