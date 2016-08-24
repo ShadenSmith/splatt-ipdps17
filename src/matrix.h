@@ -85,6 +85,15 @@ void mat_syminv(
   matrix_t * const A);
 
 
+#define mat_solve_normals splatt_mat_solve_normals
+void mat_solve_normals(
+  idx_t const mode,
+  idx_t const nmodes,
+	matrix_t * * ata,
+  matrix_t * rhs,
+  val_t const reg);
+
+
 #define mat_aTa_hada splatt_mat_aTa_hada
 /**
 * @brief Compute (A^T A * B^T B * C^T C ...) where * is the Hadamard product.

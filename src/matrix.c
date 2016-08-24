@@ -464,8 +464,8 @@ void mat_aTa(
   timer_start(&timers[TIMER_ATA]);
 #define SPLATT_USE_MKL
 #ifdef SPLATT_USE_MKL
-  cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, A->J, A->J, A->I, 1, A->vals, A->J, A->vals, A->J, 0, ret->vals, ret->J);
-  /*char uplo = 'L';
+  //cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, A->J, A->J, A->I, 1, A->vals, A->J, A->vals, A->J, 0, ret->vals, ret->J);
+  char uplo = 'L';
   char trans = 'N';
   int N = A->J;
   int K = A->I;
@@ -473,7 +473,7 @@ void mat_aTa(
   int ldc = N;
   val_t alpha = 1.;
   val_t beta = 0.;
-  dsyrk(&uplo, &trans, &N, &K, &alpha, A->vals, &lda, &beta, ret->vals, &ldc);*/
+  dsyrk(&uplo, &trans, &N, &K, &alpha, A->vals, &lda, &beta, ret->vals, &ldc);
 #else
   /* check matrix dimensions */
   assert(ret->I == ret->J);
@@ -584,6 +584,91 @@ void mat_matmul(
 #endif
 
   timer_stop(&timers[TIMER_MATMUL]);
+}
+
+
+
+/* mkl.h is probably better for this */
+#if   SPLATT_VAL_TYPEWIDTH == 32
+  void spotrf_(char *, int *, float *, int *, int *);
+  void spotrs_(char *, int *, int *, float *, int *, float *, int *, int *);
+  void ssyrk_(char *, char *, int *, int *, float *, float *, int *, float *, float *, int *);
+
+  #define LAPACK_DPOTRF spotrf_
+  #define LAPACK_DPOTRS spotrs_
+  #define LAPACK_DSYRK  ssyrk_
+#else
+  void dpotrf_(char *, int *, double *, int *, int *);
+  void dpotrs_(char *, int *, int *, double *, int *, double *, int *, int *);
+  void dsyrk_(char *, char *, int *, int *, double *, double *, int *, double *, double *, int *);
+
+  #define LAPACK_DPOTRF dpotrf_
+  #define LAPACK_DPOTRS dpotrs_
+  #define LAPACK_DSYRK  dsyrk_
+#endif
+
+
+void mat_solve_normals(
+  idx_t const mode,
+  idx_t const nmodes,
+	matrix_t * * aTa,
+  matrix_t * rhs,
+  val_t const reg)
+{
+  timer_start(&timers[TIMER_INV]);
+
+  /* nfactors */
+  int const N = aTa[0]->J;
+
+  /* form upper-triangual normal equations */
+  val_t * const restrict neqs = aTa[MAX_NMODES]->vals;
+  #pragma omp parallel
+  {
+    /* first initialize */
+    #pragma omp for schedule(static, 1)
+    for(int i=0; i < N; ++i) {
+      neqs[i+(i*N)] = 1. + reg;
+      for(int j=i+1; j < N; ++j) {
+        neqs[j+(i*N)] = 1.;
+      }
+    }
+
+    for(idx_t m=0; m < nmodes; ++m) {
+      if(m == mode) {
+        continue;
+      }
+
+      val_t const * const restrict mat = aTa[m]->vals;
+      #pragma omp for schedule(static, 1) nowait
+      for(int i=0; i < N; ++i) {
+        for(int j=i; j < N; ++j) {
+          neqs[j+(i*N)] *= mat[j+(i*N)];
+        }
+      }
+    }
+  } /* omp parallel */
+
+
+  /* Cholesky factorization */
+  char uplo = 'L';
+  int order = N;
+  int lda = N;
+  int info;
+  LAPACK_DPOTRF(&uplo, &order, neqs, &lda, &info);
+  if(info) {
+    fprintf(stderr, "SPLATT: DPOTRF returned %d\n", info);
+  }
+
+
+  /* Solve against rhs */
+  int nrhs = (int) rhs->I;
+  int ldb = N;
+  LAPACK_DPOTRS(&uplo, &order, &nrhs, neqs, &lda, rhs->vals, &ldb, &info);
+  if(info) {
+    fprintf(stderr, "SPLATT: DPOTRS returned %d\n", info);
+  }
+
+  timer_stop(&timers[TIMER_INV]);
 }
 
 void mat_normalize(
