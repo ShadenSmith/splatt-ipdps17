@@ -44,6 +44,10 @@ typedef enum
  * PUBLIC FUNCTIONS
  *****************************************************************************/
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define mat_cholesky splatt_mat_cholesky
 /**
 * @brief Compute the Cholesky factorization of A.
@@ -253,5 +257,9 @@ matrix_t * mat_mkrow(
 */
 matrix_t * mat_mkcol(
   matrix_t const * const mat);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
