@@ -517,21 +517,15 @@ void mat_aTa(
       }
     }
   }
+#endif
 
 #ifdef SPLATT_USE_MPI
   timer_start(&timers[TIMER_MPI_ATA]);
-  timer_start(&timers[TIMER_MPI_IDLE]);
-  MPI_Barrier(rinfo->comm_3d);
-  timer_stop(&timers[TIMER_MPI_IDLE]);
-
   timer_start(&timers[TIMER_MPI_COMM]);
-  MPI_Allreduce(thds[0].scratch[0], ret->vals, F * F, SPLATT_MPI_VAL, MPI_SUM,
+  MPI_Allreduce(MPI_IN_PLACE, ret->vals, F * F, SPLATT_MPI_VAL, MPI_SUM,
       rinfo->comm_3d);
   timer_stop(&timers[TIMER_MPI_COMM]);
   timer_stop(&timers[TIMER_MPI_ATA]);
-#else
-  par_memcpy(ret->vals, (val_t *) thds[0].scratch[0], F * F * sizeof(val_t));
-#endif
 #endif
 
   timer_stop(&timers[TIMER_ATA]);
