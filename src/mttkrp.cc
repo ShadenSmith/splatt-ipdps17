@@ -1852,7 +1852,7 @@ static void p_csf_mttkrp_root_(
   }
 
   if(nmodes == 3) {
-    p_csf_mttkrp_root3(ct, tile_id, mats, thds);
+    p_csf_mttkrp_root3_<NFACTORS>(ct, tile_id, mats, thds);
     return;
   }
 
