@@ -351,7 +351,6 @@ double cpd_als_iterate(
       calc_gram_inv(m, nmodes, aTa);
 
       /* A = M1 * M2 */
-      t = omp_get_wtime();
       mat_matmul(m1, aTa[MAX_NMODES], mats[m]);
 #else
       par_memcpy(mats[m]->vals, m1->vals, m1->I * nfactors * sizeof(val_t));
