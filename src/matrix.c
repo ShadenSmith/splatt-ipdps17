@@ -464,7 +464,9 @@ void mat_aTa(
   timer_start(&timers[TIMER_ATA]);
 #define SPLATT_USE_MKL
 #ifdef SPLATT_USE_MKL
-  //cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, A->J, A->J, A->I, 1, A->vals, A->J, A->vals, A->J, 0, ret->vals, ret->J);
+#ifdef __AVX512F__
+  cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, A->J, A->J, A->I, 1, A->vals, A->J, A->vals, A->J, 0, ret->vals, ret->J);
+#else
   char uplo = 'L';
   char trans = 'N';
   int N = A->J;
@@ -474,6 +476,7 @@ void mat_aTa(
   val_t alpha = 1.;
   val_t beta = 0.;
   dsyrk(&uplo, &trans, &N, &K, &alpha, A->vals, &lda, &beta, ret->vals, &ldc);
+#endif
 #else
   /* check matrix dimensions */
   assert(ret->I == ret->J);
@@ -517,15 +520,21 @@ void mat_aTa(
       }
     }
   }
-#endif
 
 #ifdef SPLATT_USE_MPI
   timer_start(&timers[TIMER_MPI_ATA]);
+  timer_start(&timers[TIMER_MPI_IDLE]);
+  MPI_Barrier(rinfo->comm_3d);
+  timer_stop(&timers[TIMER_MPI_IDLE]);
+
   timer_start(&timers[TIMER_MPI_COMM]);
-  MPI_Allreduce(MPI_IN_PLACE, ret->vals, F * F, SPLATT_MPI_VAL, MPI_SUM,
+  MPI_Allreduce(thds[0].scratch[0], ret->vals, F * F, SPLATT_MPI_VAL, MPI_SUM,
       rinfo->comm_3d);
   timer_stop(&timers[TIMER_MPI_COMM]);
   timer_stop(&timers[TIMER_MPI_ATA]);
+#else
+  par_memcpy(ret->vals, (val_t *) thds[0].scratch[0], F * F * sizeof(val_t));
+#endif
 #endif
 
   timer_stop(&timers[TIMER_ATA]);
@@ -641,7 +650,6 @@ void mat_solve_normals(
       }
     }
   } /* omp parallel */
-
 
   /* Cholesky factorization */
   char uplo = 'L';
