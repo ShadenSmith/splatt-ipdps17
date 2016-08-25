@@ -227,6 +227,7 @@ typedef enum
   SPLATT_SYNC_TTAS, /* our own implementation of test and test-and-set lock with backoff */
   SPLATT_SYNC_RTM, /* restricted transactional memory */
   SPLATT_SYNC_CAS, /* compare-and-swap */
+  SPLATT_SYNC_VCAS, /* emulation of 64B compare-and-swap */
   SPLATT_SYNC_NOSYNC, /* just to see performance with an ideal synchronization */
 } splatt_sync_type;
 

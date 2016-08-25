@@ -20,6 +20,7 @@ static char cpd_doc[] =
   "  ttas\t\tTest and test-and-set lock with backoff\n"
   "  rtm\t\tRestricted transactional memory\n"
   "  cas\t\tCompare and swap\n"
+  "  vcas\t\tEmulation of 64B compare and swap (not functionally correct)\n"
   "  nosync\t\tNo synchronization (just a comparison point)\n";
 
 #define TT_NOWRITE 253
@@ -115,6 +116,8 @@ static error_t parse_cpd_opt(
       args->opts[SPLATT_OPTION_SYNCHRONIZATION] = SPLATT_SYNC_RTM;
     } else if(strcmp(arg, "cas") == 0) {
       args->opts[SPLATT_OPTION_SYNCHRONIZATION] = SPLATT_SYNC_CAS;
+    } else if(strcmp(arg, "vcas") == 0) {
+      args->opts[SPLATT_OPTION_SYNCHRONIZATION] = SPLATT_SYNC_VCAS;
     } else if(strcmp(arg, "nosync") == 0) {
       args->opts[SPLATT_OPTION_SYNCHRONIZATION] = SPLATT_SYNC_NOSYNC;
     } else {
