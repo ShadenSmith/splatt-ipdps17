@@ -302,7 +302,8 @@ idx_t * tt_densetile(
   idx_t * tcounts;
   int ret = hbw_posix_memalign((void **)&tcounts, 4096, (nthreads*ntiles + 1)*sizeof(idx_t));
   if(ret != 0) {
-    fprintf(stderr, "SPALTT: hbw_posix_memalign() returned %d.\n", ret);
+    fprintf(stderr, "SPLATT: hbw_posix_memalign() returned %d.\n", ret);
+    assert(0);
   }
 #else
   idx_t * tcounts = (idx_t *) splatt_malloc((nthreads*ntiles+1)*sizeof(idx_t));
@@ -399,7 +400,11 @@ idx_t * tt_densetile(
 
   idx_t *real_tcounts = (idx_t *)splatt_malloc((ntiles + 1)*sizeof(idx_t));
   par_memcpy(real_tcounts, tcounts, (ntiles + 1)*sizeof(idx_t));
+#ifdef HBW_ALLOC
+  hbw_free(tcounts);
+#else
   splatt_free(tcounts);
+#endif
 
   return real_tcounts;
 }
