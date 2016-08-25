@@ -160,7 +160,9 @@ void csf_find_mode_order(
   idx_t const nmodes,
   csf_mode_type which,
   idx_t const mode,
-  idx_t * const perm_dims);
+  idx_t * const perm_dims,
+  idx_t nnz,
+  double const * const opts);
 
 
 #define csf_mode_depth splatt_csf_mode_depth

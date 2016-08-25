@@ -9,6 +9,7 @@
 #include "sort.h"
 #include "tile.h"
 #include "util.h"
+#include "mttkrp.h"
 
 #include "io.h"
 #include <omp.h>
@@ -111,6 +112,32 @@ static void p_order_dims_small(
     }
   }
 }
+
+
+/**
+ * Same as p_order_dims_small but don't put dims that can be privated
+ * as the root
+ */
+static void p_order_dims_small_no_privatization(
+  idx_t const * const dims,
+  idx_t const nmodes,
+  idx_t * const perm_dims,
+  idx_t nnz,
+  double const * const opts)
+{
+  p_order_dims_small(dims, nmodes, perm_dims);
+
+  /* find where custom_mode was placed and adjust from there */
+  for(idx_t m=0; m < nmodes; ++m) {
+    idx_t perm_dim = perm_dims[m];
+    if(!mttkrp_use_privatization(nnz, dims[perm_dims[m]], opts)) {
+      memmove(perm_dims + 1, perm_dims, (m) * sizeof(m));
+      perm_dims[0] = perm_dim;
+      break;
+    }
+  }
+}
+
 
 /**
 * @brief Find a permutation of modes such that the first mode is 'custom-mode'
@@ -932,12 +959,23 @@ static void p_csf_alloc_densetile(
   ct->ntiles = ntiles;
   ct->pt = splatt_malloc(ntiles * sizeof(*(ct->pt)));
 
+  fidx_t *fids_buf = NULL;
+  val_t *vals_buf = NULL;
+
 #ifdef HBW_ALLOC
-  hbw_posix_memalign((void **)&ct->pt[0].fids[nmodes-1], 4096, ct->nnz * sizeof(**(ct->pt[0].fids)));
-  hbw_posix_memalign((void **)&ct->pt[0].vals, 4096, ct->nnz * sizeof(*(ct->pt[0].vals)));
+  int ret = hbw_posix_memalign((void **)&fids_buf, 4096, ct->nnz * sizeof(**(ct->pt[0].fids)));
+  if(ret != 0) {
+    fprintf(stderr, "SPLATT: hbw_posix_memalign() returned %d.\n", ret);
+    assert(0);
+  }
+  ret = hbw_posix_memalign((void **)&vals_buf, 4096, ct->nnz * sizeof(*(ct->pt[0].vals)));
+  if(ret != 0) {
+    fprintf(stderr, "SPLATT: hbw_posix_memalign() returned %d.\n", ret);
+    assert(0);
+  }
 #else
-  ct->pt[0].fids[nmodes - 1] = splatt_malloc(ct->nnz * sizeof(**(ct->pt[0].fids)));
-  ct->pt[0].vals = splatt_malloc(ct->nnz * sizeof(*(ct->pt[0].vals)));
+  fids_buf = splatt_malloc(ct->nnz * sizeof(**(ct->pt[0].fids)));
+  vals_buf = splatt_malloc(ct->nnz * sizeof(*(ct->pt[0].vals)));
 #endif
 
   for(idx_t m=0; m < nmodes-1; ++m) {
@@ -971,7 +1009,7 @@ static void p_csf_alloc_densetile(
         /* last row of fptr is just nonzero inds */
         pt->nfibs[nmodes-1] = ptnnz;
 
-        pt->fids[nmodes-1] = ct->pt[0].fids[nmodes-1] + startnnz;
+        pt->fids[nmodes-1] = fids_buf + startnnz;
         if (omp_in_parallel()) {
           for (idx_t i = 0; i < ptnnz; ++i) {
             pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][startnnz + i];
@@ -984,7 +1022,7 @@ static void p_csf_alloc_densetile(
           }
         }
 
-        pt->vals = ct->pt[0].vals + startnnz;
+        pt->vals = vals_buf + startnnz;
         if (omp_in_parallel()) {
           memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
         }
@@ -1067,7 +1105,7 @@ static void p_mk_csf(
   }
 
   /* get the indices in order */
-  csf_find_mode_order(tt->dims, tt->nmodes, mode_type, mode, ct->dim_perm);
+  csf_find_mode_order(tt->dims, tt->nmodes, mode_type, mode, ct->dim_perm, ct->nnz, splatt_opts);
 
   ct->which_tile = (splatt_tile_type)splatt_opts[SPLATT_OPTION_TILE];
   switch(ct->which_tile) {
@@ -1140,11 +1178,13 @@ void csf_find_mode_order(
   idx_t const nmodes,
   csf_mode_type which,
   idx_t const mode,
-  idx_t * const perm_dims)
+  idx_t * const perm_dims,
+  idx_t nnz,
+  double const * const opts)
 {
   switch(which) {
   case CSF_SORTED_SMALLFIRST:
-    p_order_dims_small(dims, nmodes, perm_dims);
+    p_order_dims_small_no_privatization(dims, nmodes, perm_dims, nnz, opts);
     break;
 
   case CSF_SORTED_BIGFIRST:

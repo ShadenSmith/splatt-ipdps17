@@ -281,7 +281,7 @@ double cpd_als_iterate(
     case SPLATT_CSF_ONEMODE:
       outdepth = csf_mode_depth(m, tensors[0].dim_perm, nmodes);
       if(outdepth > 0) {
-        if(mttkrp_use_privatization(tensors, mats, m, opts)) {
+        if(mttkrp_use_privatization(tensors->nnz, mats[m]->I, opts)) {
           printf("mode %d use privatization\n", m);
           reduction_scratch_size = SS_MAX(reduction_scratch_size, mats[m]->I);
         }
@@ -291,7 +291,7 @@ double cpd_als_iterate(
       if(m != tensors[0].dim_perm[nmodes-1]) { /* longest mode handled via second tensor's root */
         outdepth = csf_mode_depth(m, tensors[0].dim_perm, nmodes);
         if(outdepth > 0) {
-          if(mttkrp_use_privatization(tensors, mats, m, opts)) {
+          if(mttkrp_use_privatization(tensors->nnz, mats[m]->I, opts)) {
             printf("mode %d use privatization\n", m);
             reduction_scratch_size = SS_MAX(reduction_scratch_size, mats[m]->I);
           }
@@ -347,8 +347,16 @@ double cpd_als_iterate(
       mttkrp_csf(tensors, mats, m, thds, opts);
       timer_stop(&timers[TIMER_MTTKRP]);
 
+#ifdef __AVX512F__
+      calc_gram_inv(m, nmodes, aTa);
+
+      /* A = M1 * M2 */
+      t = omp_get_wtime();
+      mat_matmul(m1, aTa[MAX_NMODES], mats[m]);
+#else
       par_memcpy(mats[m]->vals, m1->vals, m1->I * nfactors * sizeof(val_t));
       mat_solve_normals(m, nmodes, aTa, mats[m], 0.);
+#endif
 
       /* normalize columns and extract lambda */
       if(it == 0) {
