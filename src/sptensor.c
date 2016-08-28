@@ -12,7 +12,7 @@
 #include <math.h>
 
 #ifdef __AVX512F__
-#define HBW_ALLOC
+//#define HBW_ALLOC
   /* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
    * to allocate sptensor data to DDR */
 #endif
@@ -53,7 +53,7 @@ static inline int p_same_coord(
 val_t tt_normsq(sptensor_t const * const tt)
 {
   val_t norm = 0.0;
-  val_t const * const restrict tv = tt->vals;
+  storage_val_t const * const restrict tv = tt->vals;
   for(idx_t n=0; n < tt->nnz; ++n) {
     norm += tv[n] * tv[n];
   }
@@ -268,9 +268,9 @@ sptensor_t * tt_alloc(
 
   tt->nnz = nnz;
 #ifdef HBW_ALLOC
-  hbw_posix_memalign((void **)&tt->vals, 4096, nnz * sizeof(val_t));
+  hbw_posix_memalign((void **)&tt->vals, 4096, nnz * sizeof(tt->vals[0]));
 #else
-  tt->vals = (val_t*) splatt_malloc(nnz * sizeof(val_t));
+  tt->vals = (storage_val_t*) splatt_malloc(nnz * sizeof(tt->vals[0]));
 #endif
 
   tt->nmodes = nmodes;
@@ -299,7 +299,7 @@ void tt_fill(
   idx_t const nnz,
   idx_t const nmodes,
   fidx_t ** const inds,
-  val_t * const vals)
+  storage_val_t * const vals)
 {
   tt->tiled = SPLATT_NOTILE;
   tt->nnz = nnz;

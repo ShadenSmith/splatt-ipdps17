@@ -10,7 +10,7 @@
 #include "util.h"
 
 #ifdef __AVX512F__
-#define HBW_ALLOC
+//#define HBW_ALLOC
   /* define this and run with "numalloc -m 1" and MEMKIND_HBW_NODES=0
    * to allocate non-performance critical performance data to DDR */
 #endif
@@ -235,7 +235,7 @@ static inline void p_ttswap(
   idx_t const i,
   idx_t const j)
 {
-  val_t vtmp = tt->vals[i];
+  storage_val_t vtmp = tt->vals[i];
   tt->vals[i] = tt->vals[j];
   tt->vals[j] = vtmp;
 
@@ -265,9 +265,9 @@ static void p_tt_insertionsort3(
   fidx_t * const ind0 = tt->ind[cmplt[0]];
   fidx_t * const ind1 = tt->ind[cmplt[1]];
   fidx_t * const ind2 = tt->ind[cmplt[2]];
-  val_t * const vals = tt->vals;
+  storage_val_t * const vals = tt->vals;
 
-  val_t vbuf;
+  storage_val_t vbuf;
   idx_t ibuf;
 
   for(size_t i=start+1; i < end; ++i) {
@@ -279,7 +279,7 @@ static void p_tt_insertionsort3(
     vbuf = vals[i];
 
     /* shift all data */
-    memmove(vals+j+1, vals+j, (i-j)*sizeof(val_t));
+    memmove(vals+j+1, vals+j, (i-j)*sizeof(vals[0]));
     vals[j] = vbuf;
     ibuf = ind0[i];
     memmove(ind0+j+1, ind0+j, (i-j)*sizeof(fidx_t));
@@ -309,9 +309,9 @@ static void p_tt_insertionsort2(
 {
   fidx_t * const ind0 = tt->ind[cmplt[0]];
   fidx_t * const ind1 = tt->ind[cmplt[1]];
-  val_t * const vals = tt->vals;
+  storage_val_t * const vals = tt->vals;
 
-  val_t vbuf;
+  storage_val_t vbuf;
   idx_t ibuf;
 
   for(size_t i=start+1; i < end; ++i) {
@@ -323,7 +323,7 @@ static void p_tt_insertionsort2(
     vbuf = vals[i];
 
     /* shift all data */
-    memmove(vals+j+1, vals+j, (i-j)*sizeof(val_t));
+    memmove(vals+j+1, vals+j, (i-j)*sizeof(vals[0]));
     vals[j] = vbuf;
     ibuf = ind0[i];
     memmove(ind0+j+1, ind0+j, (i-j)*sizeof(fidx_t));
@@ -349,10 +349,10 @@ static void p_tt_insertionsort(
   idx_t const end)
 {
   fidx_t * ind;
-  val_t * const vals = tt->vals;
+  storage_val_t * const vals = tt->vals;
   idx_t const nmodes = tt->nmodes;
 
-  val_t vbuf;
+  storage_val_t vbuf;
   idx_t ibuf;
 
   for(size_t i=start+1; i < end; ++i) {
@@ -364,7 +364,7 @@ static void p_tt_insertionsort(
     vbuf = vals[i];
 
     /* shift all data */
-    memmove(vals+j+1, vals+j, (i-j)*sizeof(val_t));
+    memmove(vals+j+1, vals+j, (i-j)*sizeof(vals[0]));
     vals[j] = vbuf;
     for(idx_t m=0; m < nmodes; ++m) {
       ind = tt->ind[m];
@@ -390,13 +390,13 @@ static void p_tt_quicksort3(
   idx_t const start,
   idx_t const end)
 {
-  val_t vmid;
+  storage_val_t vmid;
   idx_t imid[3];
 
   fidx_t * const ind0 = tt->ind[cmplt[0]];
   fidx_t * const ind1 = tt->ind[cmplt[1]];
   fidx_t * const ind2 = tt->ind[cmplt[2]];
-  val_t * const vals = tt->vals;
+  storage_val_t * const vals = tt->vals;
 
   if((end-start) <= MIN_QUICKSORT_SIZE) {
     p_tt_insertionsort3(tt, cmplt, start, end);
@@ -420,7 +420,7 @@ static void p_tt_quicksort3(
       if(p_ttqcmp3(ind0,ind1,ind2,i,imid) == 1) {
         /* if tt[j] <= mid  -> swap tt[i] and tt[j] */
         if(p_ttqcmp3(ind0,ind1,ind2,j,imid) < 1) {
-          val_t vtmp = vals[i];
+          storage_val_t vtmp = vals[i];
           vals[i] = vals[j];
           vals[j] = vtmp;
           idx_t itmp = ind0[i];
@@ -481,12 +481,12 @@ static void p_tt_quicksort2(
   idx_t const start,
   idx_t const end)
 {
-  val_t vmid;
+  storage_val_t vmid;
   idx_t imid[2];
 
   fidx_t * const ind0 = tt->ind[cmplt[0]];
   fidx_t * const ind1 = tt->ind[cmplt[1]];
-  val_t * const vals = tt->vals;
+  storage_val_t * const vals = tt->vals;
 
   if((end-start) <= MIN_QUICKSORT_SIZE) {
     p_tt_insertionsort2(tt, cmplt, start, end);
@@ -508,7 +508,7 @@ static void p_tt_quicksort2(
       if(p_ttqcmp2(ind0,ind1,i,imid) == 1) {
         /* if tt[j] <= mid  -> swap tt[i] and tt[j] */
         if(p_ttqcmp2(ind0,ind1,j,imid) < 1) {
-          val_t vtmp = vals[i];
+          storage_val_t vtmp = vals[i];
           vals[i] = vals[j];
           vals[j] = vtmp;
           idx_t itmp = ind0[i];
@@ -580,9 +580,9 @@ static inline int cmp3(
 }
 
 static void merge(
-  fidx_t *in_idx1, fidx_t *in_idx2, fidx_t* in_idx3, val_t *in_val,
+  fidx_t *in_idx1, fidx_t *in_idx2, fidx_t* in_idx3, storage_val_t *in_val,
   int first1, int last1, int first2, int last2,
-  fidx_t *out_idx1, fidx_t *out_idx2, fidx_t *out_idx3, val_t *out_val)
+  fidx_t *out_idx1, fidx_t *out_idx2, fidx_t *out_idx3, storage_val_t *out_val)
 {
   int out = 0;
   for ( ; first1 != last1; ++out) {
@@ -740,10 +740,10 @@ static void kth_element(
  * @param my_thread_num thread id (zeor-based) among the threads that participate in this merge
  */
 static void parallel_merge(
-  fidx_t *in1, fidx_t *in2, fidx_t *in3, val_t *in_val,
+  fidx_t *in1, fidx_t *in2, fidx_t *in3, storage_val_t *in_val,
   int in_begin1, int in_begin2,
   int n1, int n2,
-  fidx_t *out1, fidx_t *out2, fidx_t *out3, val_t *out_val,
+  fidx_t *out1, fidx_t *out2, fidx_t *out3, storage_val_t *out_val,
   int num_threads, int my_thread_num)
 {
    int n = n1 + n2;
@@ -786,7 +786,7 @@ void merge_sort(
    fidx_t *temp1 = (fidx_t *)splatt_malloc(len * sizeof(fidx_t));
    fidx_t *temp2 = (fidx_t *)splatt_malloc(len * sizeof(fidx_t));
    fidx_t *temp3 = (fidx_t *)splatt_malloc(len * sizeof(fidx_t));
-   val_t *temp_val = (val_t *)splatt_malloc(len * sizeof(val_t));
+   storage_val_t *temp_val = (storage_val_t *)splatt_malloc(len * sizeof(temp_val[0]));
 
    int thread_private_len[omp_get_max_threads()];
    int out_len = 0;
@@ -813,12 +813,12 @@ void merge_sort(
       fidx_t *in_buf1 = tt->ind[cmplt[0]] + start;
       fidx_t *in_buf2 = tt->ind[cmplt[1]] + start;
       fidx_t *in_buf3 = tt->ind[cmplt[2]] + start;
-      val_t *in_val = tt->vals + start;
+      storage_val_t *in_val = tt->vals + start;
 
       fidx_t *out_buf1 = temp1;
       fidx_t *out_buf2 = temp2;
       fidx_t *out_buf3 = temp3;
-      val_t *out_val = temp_val;
+      storage_val_t *out_val = temp_val;
 
       for (in_group_size = 1; in_group_size < num_threads; in_group_size *= 2)
       {
@@ -853,7 +853,7 @@ void merge_sort(
          fidx_t *temp1 = in_buf1;
          fidx_t *temp2 = in_buf2;
          fidx_t *temp3 = in_buf3;
-         val_t *temp_val = in_val;
+         storage_val_t *temp_val = in_val;
 
          in_buf1 = out_buf1;
          in_buf2 = out_buf2;
@@ -902,164 +902,6 @@ static inline idx_t transpose_idx(idx_t idx, idx_t dim1, idx_t dim2)
   return idx%dim1*dim2 + idx/dim1;
 }
 
-/**
- * LSB radix sort (stable sort)
- */
-void radix_sort(sptensor_t * const tt, idx_t *cmplt)
-{
-  idx_t maxdim = 0;
-  for (idx_t m = 0; m < tt->nmodes; ++m) {
-    maxdim = SS_MAX(maxdim, tt->dims[m]);
-  }
-
-  fidx_t **new_ind = splatt_malloc(tt->nmodes*sizeof(fidx_t *));
-  for(idx_t m = 0; m < tt->nmodes; ++m) {
-    new_ind[m] = splatt_malloc(tt->nnz*sizeof(fidx_t));
-  }
-  val_t *new_vals = splatt_malloc(tt->nnz*sizeof(val_t));
-
-  idx_t *histogram_array = splatt_malloc((maxdim + 1)*omp_get_max_threads()*sizeof(idx_t));
-  /* move non-zero indices in this buffer instead of values of tt->ind and tt->vals */
-  idx_t *perm_double_buffer = splatt_malloc(2*tt->nnz*sizeof(idx_t));
-
-  for (int i = tt->nmodes - 1; i >= 0; --i) {
-    idx_t m = cmplt[i];
-    idx_t nslices = tt->dims[m];
-
-    idx_t *perm_in = perm_double_buffer + (i%2)*tt->nnz;
-    idx_t *perm_out = perm_double_buffer + ((i + 1)%2)*tt->nnz;
-
-#pragma omp parallel
-    {
-      double t = omp_get_wtime();
-
-      int nthreads = omp_get_num_threads();
-      int tid = omp_get_thread_num();
-
-      idx_t *histogram = histogram_array + nslices*tid;
-      memset(histogram, 0, nslices * sizeof(idx_t));
-
-      idx_t j_per_thread = (tt->nnz + nthreads - 1)/nthreads;
-      idx_t jbegin = SS_MIN(j_per_thread*tid, tt->nnz);
-      idx_t jend = SS_MIN(jbegin + j_per_thread, tt->nnz);
-
-      /* count */
-      if (i == tt->nmodes - 1) {
-        for (idx_t j = jbegin; j < jend; ++j) {
-          idx_t idx = tt->ind[m][j];
-          assert(idx < nslices);
-          ++histogram[idx];
-        }
-      }
-      else {
-        for (idx_t j = jbegin; j < jend; ++j) {
-          idx_t idx = tt->ind[m][perm_in[j]];
-          assert(idx < nslices);
-          ++histogram[idx];
-        }
-      }
-
-#pragma omp barrier
-
-      /* prefix sum */
-      for (idx_t j = tid*nslices + 1; j < (tid + 1)*nslices; ++j) {
-        idx_t transpose_j = transpose_idx(j, nthreads, nslices);
-        idx_t transpose_j_minus_1 = transpose_idx(j - 1, nthreads, nslices);
-        
-        histogram_array[transpose_j] += histogram_array[transpose_j_minus_1];
-      }
-
-#pragma omp barrier
-#pragma omp master
-      {
-        if (0 == tid) printf("\tgather takes %f\n", omp_get_wtime() - t);
-        t = omp_get_wtime();
-
-        for (idx_t t = 1; t < nthreads; ++t) {
-          idx_t j0 = nslices*t - 1, j1 = nslices*(t + 1) - 1;
-          idx_t transpose_j0 = transpose_idx(j0, nthreads, nslices);
-          idx_t transpose_j1 = transpose_idx(j1, nthreads, nslices);
-
-          histogram_array[transpose_j1] += histogram_array[transpose_j0];
-        }
-      }
-#pragma omp barrier
-
-      if (tid > 0) {
-        idx_t transpose_j0 = transpose_idx(nslices*tid - 1, nthreads, nslices);
-
-        for (idx_t j = tid*nslices; j < (tid + 1)*nslices - 1; ++j) {
-          idx_t transpose_j = transpose_idx(j, nthreads, nslices);
-
-          histogram_array[transpose_j] += histogram_array[transpose_j0];
-        }
-      }
-
-#pragma omp barrier
-
-      /* scatter */
-      if (i == tt->nmodes - 1) {
-        /* first round */
-        for (idx_t j = jend - 1; ; --j) {
-          idx_t idx = tt->ind[m][j];
-          --histogram[idx];
-
-          idx_t offset = histogram[idx];
-          assert(offset < tt->nnz);
-
-          perm_out[offset] = j;
-
-          if (j == jbegin) break;
-        }
-      }
-      else if (0 == i) {
-        /* last round */
-        for (idx_t j = jend - 1; ; --j) {
-          idx_t j2 = perm_in[j];
-          idx_t idx = tt->ind[m][j2];
-          --histogram[idx];
-
-          idx_t offset = histogram[idx];
-          assert(offset < tt->nnz);
-
-          /* copy ind and vals based on perm_in */
-          new_vals[offset] = tt->vals[j2];
-          for(idx_t m = 0; m < tt->nmodes; ++m) {
-            new_ind[m][offset] = tt->ind[m][j2];
-          }
-
-          if (j == jbegin) break;
-        }
-      }
-      else {
-        for (idx_t j = jend - 1; ; --j) {
-          idx_t j2 = perm_in[j];
-          idx_t idx = tt->ind[m][j2];
-          --histogram[idx];
-
-          idx_t offset = histogram[idx];
-          assert(offset < tt->nnz);
-
-          perm_out[offset] = j2;
-
-          if (j == jbegin) break;
-        }
-      }
-      //if (0 == tid) printf("\tscatter takes %f\n", omp_get_wtime() - t);
-    } /* omp parallel */
-  } /* for each mode */
-
-  splatt_free(histogram_array);
-
-  splatt_free(perm_double_buffer);
-  for(idx_t m = 0; m < tt->nmodes; ++m) {
-    splatt_free(tt->ind[m]);
-    tt->ind[m] = new_ind[m];
-  }
-  splatt_free(new_ind);
-  splatt_free(tt->vals);
-  tt->vals = new_vals;
-}
 
 /**
  * counting sort on the msb and comparison-based sort for
@@ -1079,13 +921,13 @@ static void p_counting_sort_hybrid3(sptensor_t * const tt, idx_t *cmplt)
 #endif
   }
 
-  val_t *new_vals;
+  storage_val_t *new_vals;
   idx_t *histogram_array;
 #ifdef HBW_ALLOC
-  hbw_posix_memalign((void **)&new_vals, 4096, tt->nnz*sizeof(val_t));
+  hbw_posix_memalign((void **)&new_vals, 4096, tt->nnz*sizeof(new_vals[0]));
   hbw_posix_memalign((void **)&histogram_array, 4096, (nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
 #else
-  new_vals = splatt_malloc(tt->nnz*sizeof(val_t));
+  new_vals = splatt_malloc(tt->nnz*sizeof(new_vals[0]));
   histogram_array = splatt_malloc((nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
 #endif
 
@@ -1254,11 +1096,11 @@ static void p_tt_quicksort(
   idx_t const start,
   idx_t const end)
 {
-  val_t vmid;
+  storage_val_t vmid;
   idx_t imid[MAX_NMODES];
 
   fidx_t * ind;
-  val_t * const vals = tt->vals;
+  storage_val_t * const vals = tt->vals;
   idx_t const nmodes = tt->nmodes;
 
   if((end-start) <= MIN_QUICKSORT_SIZE) {
@@ -1335,13 +1177,13 @@ static void p_counting_sort_hybrid(sptensor_t * const tt, idx_t *cmplt)
 #endif
   }
 
-  val_t *new_vals;
+  storage_val_t *new_vals;
   idx_t *histogram_array;
 #ifdef HBW_ALLOC
-  hbw_posix_memalign((void **)&new_vals, 4096, tt->nnz*sizeof(val_t));
+  hbw_posix_memalign((void **)&new_vals, 4096, tt->nnz*sizeof(new_vals[0]));
   hbw_posix_memalign((void **)&histogram_array, 4096, (nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
 #else
-  new_vals = splatt_malloc(tt->nnz*sizeof(val_t));
+  new_vals = splatt_malloc(tt->nnz*sizeof(new_vals[0]));
   histogram_array = splatt_malloc((nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
 #endif
 

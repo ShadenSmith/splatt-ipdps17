@@ -249,7 +249,7 @@ void ften_alloc(
 
   /* allocate modal data */
   ft->inds = (idx_t *) splatt_malloc(ft->nnz * sizeof(idx_t));
-  ft->vals = (val_t *) splatt_malloc(ft->nnz * sizeof(val_t));
+  ft->vals = (storage_val_t *) splatt_malloc(ft->nnz * sizeof(ft->vals[0]));
 
   tt_sort(tt, mode, ft->dim_perm);
   if(tile != SPLATT_NOTILE) {
@@ -295,7 +295,10 @@ spmatrix_t * ften_spmat(
 
   memcpy(mat->rowptr, ft->fptr, (nrows+1) * sizeof(idx_t));
   memcpy(mat->colind, ft->inds, ft->nnz * sizeof(idx_t));
-  memcpy(mat->vals,   ft->vals, ft->nnz * sizeof(val_t));
+#pragma omp parallel for
+  for(idx_t i=0; i < ft->nnz; ++i) {
+    mat->vals[i] = ft->vals[i];
+  }
 
   return mat;
 }
@@ -369,7 +372,7 @@ size_t ften_storage(
   /* calculate storage */
   size_t bytes = 0;
 
-  bytes += ft->nnz * (sizeof(idx_t) + sizeof(val_t)); /* nnz */
+  bytes += ft->nnz * (sizeof(idx_t) + sizeof(ft->vals[0])); /* nnz */
   bytes += (ft->nfibs + 1) * sizeof(idx_t);           /* fptr */
   bytes += ft->nfibs * sizeof(idx_t);                 /* fids */
 

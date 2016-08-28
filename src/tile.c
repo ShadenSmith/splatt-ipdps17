@@ -11,9 +11,9 @@
 #include <omp.h>
 
 #ifdef __AVX512F__
-#define HBW_ALLOC
-  /* define this and run with "numactl -m 0" and MEMKIND_HBW_NODES=1
-   * to allocate factor matrices to MCDRAM */
+//#define HBW_ALLOC
+  /* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
+   * to allocate non-performance critical performance data to DDR */
 #endif
 #ifdef HBW_ALLOC
 #include <hbwmalloc.h>
@@ -392,7 +392,7 @@ idx_t * tt_densetile(
   tcounts[ntiles] = tt->nnz;
 
   /* copy data into old struct */
-  par_memcpy(tt->vals, newtt->vals, tt->nnz * sizeof(val_t));
+  par_memcpy(tt->vals, newtt->vals, tt->nnz * sizeof(tt->vals[0]));
   for(idx_t m=0; m < nmodes; ++m) {
     par_memcpy(tt->ind[m], newtt->ind[m], tt->nnz * sizeof(fidx_t));
   }

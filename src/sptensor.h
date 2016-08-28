@@ -33,7 +33,7 @@ typedef struct
   fidx_t ** ind;   /** An m x nnz matrix containing the coordinates of each
                       nonzero. The nth nnz is accessed via ind[0][n], ind[1][n],
                       ..., ind[m][n]. */
-  val_t * vals;   /** An array containing the values of each nonzero. */
+  storage_val_t * vals;   /** An array containing the values of each nonzero. */
   int tiled;      /** Whether sptensor_t has been tiled. Used by ftensor_t. */
 
   fidx_t * indmap[MAX_NMODES]; /** Maps local -> global indices. */
@@ -85,7 +85,7 @@ void tt_fill(
   idx_t const nnz,
   idx_t const nmodes,
   fidx_t ** const inds,
-  val_t * const vals);
+  storage_val_t * const vals);
 
 
 

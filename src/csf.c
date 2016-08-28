@@ -52,7 +52,7 @@ int splatt_csf_convert(
     splatt_idx_t const nmodes,
     splatt_idx_t const nnz,
     splatt_fidx_t ** const inds,
-    splatt_val_t * const vals,
+    splatt_storage_val_t * const vals,
     splatt_csf ** tensors,
     double const * const options)
 {
@@ -130,7 +130,7 @@ static void p_order_dims_small_no_privatization(
   /* find where custom_mode was placed and adjust from there */
   for(idx_t m=0; m < nmodes; ++m) {
     idx_t perm_dim = perm_dims[m];
-    if(!mttkrp_use_privatization(nnz, dims[perm_dims[m]], opts)) {
+    if(dims[perm_dims[m]] >= 32*1024) { // don't make it root mode if it's too short to avoid load imbalance
       memmove(perm_dims + 1, perm_dims, (m) * sizeof(m));
       perm_dims[0] = perm_dim;
       break;
@@ -608,7 +608,7 @@ static void p_mk_outerptr(
     fp[nfibs] = nnz;
   } /* omp_in_parallel */
   else {
-    idx_t nfibs[omp_get_max_threads() + 1];
+    idx_t *nfibs = malloc(sizeof(idx_t)*(omp_get_max_threads() + 1));
     nfibs[0] = 1;
 
 #pragma omp parallel
@@ -618,7 +618,7 @@ static void p_mk_outerptr(
 
       idx_t x_per_thread = (nnz + nthreads - 1)/nthreads;
       idx_t x_begin = SS_MAX(SS_MIN(x_per_thread*tid, nnz), 1);
-      idx_t x_end = SS_MIN(x_begin + x_per_thread, nnz);
+      idx_t x_end = SS_MIN(x_per_thread*(tid + 1), nnz);
 
       idx_t nfibs_private = 0;
 
@@ -911,7 +911,10 @@ static void p_csf_alloc_untiled(
   for (idx_t i = 0; i < ct->nnz; ++i) {
     pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][i];
   }
-  par_memcpy(pt->vals, tt->vals, ct->nnz * sizeof(*(pt->vals)));
+#pragma omp parallel for
+  for(idx_t i=0; i < ct->nnz; ++i) {
+    pt->vals[i] = tt->vals[i];
+  }
 
   /* setup a basic tile ptr for one tile */
   idx_t nnz_ptr[2];
@@ -1024,10 +1027,15 @@ static void p_csf_alloc_densetile(
 
         pt->vals = vals_buf + startnnz;
         if (omp_in_parallel()) {
-          memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
+          for(idx_t j=0; j < ptnnz; ++j) {
+            pt->vals[j] = tt->vals[startnnz + j];
+          }
         }
         else {
-          par_memcpy(pt->vals, tt->vals + startnnz, ptnnz * sizeof(*(pt->vals)));
+#pragma omp parallel for
+          for(idx_t j=0; j < ptnnz; ++j) {
+            pt->vals[j] = tt->vals[startnnz + j];
+          }
         }
 
         /* create fptr entries for the rest of the modes */
@@ -1184,6 +1192,7 @@ void csf_find_mode_order(
 {
   switch(which) {
   case CSF_SORTED_SMALLFIRST:
+    //p_order_dims_small(dims, nmodes, perm_dims);
     p_order_dims_small_no_privatization(dims, nmodes, perm_dims, nnz, opts);
     break;
 

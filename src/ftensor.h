@@ -41,7 +41,7 @@ typedef struct ftensor_t
   splatt_idx_t * fptr;    /** Indexes into vals the start/end of each fiber */
   splatt_idx_t * fids;    /** ID of each fiber (for mode dim_perm[nmodes-2])*/
   splatt_idx_t * inds;    /** ID of each nnz (for dim_perm[nmodes-1]) */
-  splatt_val_t * vals;    /** Floating point value of each nonzero */
+  splatt_storage_val_t * vals;    /** Floating point value of each nonzero */
 
   splatt_idx_t * indmap;  /** Maps local to global indices if empty slices */
 

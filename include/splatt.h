@@ -35,6 +35,13 @@
   #define SPLATT_VAL_TYPEWIDTH 64
 #endif
 
+#ifndef SPLATT_STORAGE_VAL_TYPEWIDTH
+  /* sptensor is mostly used for I/O (CSF for compute), so we may want to use float sometimes
+   * to save memory space */
+  #define SPLATT_STORAGE_VAL_TYPEWIDTH SPLATT_VAL_TYPEWIDTH
+  //#define SPLATT_STORAGE_VAL_TYPEWIDTH 32
+#endif
+
 /* Indices to factor matrices. Typically don't need to be 64-bit, while
  * splatt_idx_t needs to be 64-bit to index non-zeros.
  */
@@ -75,6 +82,25 @@
 
 #else
   #error *** Incorrect user-supplied value of SPLATT_VAL_TYPEWIDTH ***
+#endif
+
+
+#if   SPLATT_STORAGE_VAL_TYPEWIDTH == 32
+  typedef float splatt_storage_val_t;
+  #define SPLATT_STORAGE_VAL_MIN FLT_MIN
+  #define SPLATT_STORAGE_VAL_MAX FLT_MAX
+  #define SPLATT_STORAGE_PF_VAL "f"
+  #define SPLATT_STORAGE_MPI_VAL MPI_FLOAT
+
+#elif SPLATT_STORAGE_VAL_TYPEWIDTH == 64
+  typedef double splatt_storage_val_t;
+  #define SPLATT_STORAGE_VAL_MIN DBL_MIN
+  #define SPLATT_STORAGE_VAL_MAX DBL_MAX
+  #define SPLATT_STORAGE_PF_VAL "f"
+  #define SPLATT_STORAGE_MPI_VAL MPI_DOUBLE
+
+#else
+  #error *** Incorrect user-supplied value of SPLATT_STORAGE_VAL_TYPEWIDTH ***
 #endif
 
 
@@ -417,7 +443,7 @@ int splatt_csf_convert(
     splatt_idx_t const nmodes,
     splatt_idx_t const nnz,
     splatt_fidx_t ** const inds,
-    splatt_val_t * const vals,
+    splatt_storage_val_t * const vals,
     splatt_csf ** tensors,
     double const * const options);
 

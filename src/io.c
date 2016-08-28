@@ -12,6 +12,16 @@
 
 #include "timer.h"
 
+#include <omp.h>
+
+#ifdef __AVX512F__
+//#define HBW_ALLOC
+  /* define this and run with "numalloc -m 1" and MEMKIND_HBW_NODES=0
+   * to allocate non-performance critical performance data to DDR */
+#endif
+#ifdef HBW_ALLOC
+#include <hbwmalloc.h>
+#endif
 
 
 /******************************************************************************
@@ -152,6 +162,12 @@ static void p_write_tt_binary_header(
 }
 
 
+void fill_binary_storage_val(
+    storage_val_t * const buffer,
+    idx_t const count,
+    bin_header const * const header,
+    FILE * fin);
+
 
 /**
 * @brief Read a COORD tensor from a binary file, converting from smaller idx or
@@ -184,14 +200,37 @@ static sptensor_t * p_tt_read_binary_file(
   }
 
   /* allocate structures */
-  sptensor_t * tt = tt_alloc(nnz, nmodes);
+  sptensor_t * tt = (sptensor_t*) splatt_malloc(sizeof(tt[0]));
+  tt->tiled = SPLATT_NOTILE;
+
+  tt->nnz = nnz;
+  tt->nmodes = nmodes;
+  tt->type = (nmodes == 3) ? SPLATT_3MODE : SPLATT_NMODE;
+
+  tt->dims = (idx_t*) splatt_malloc(nmodes * sizeof(tt->dims[0]));
+  tt->ind = (fidx_t**) splatt_malloc(nmodes * sizeof(tt->ind[0]));
+
   memcpy(tt->dims, dims, nmodes * sizeof(*dims));
 
   /* fill in tensor data */
   for(idx_t m=0; m < nmodes; ++m) {
+    double t = omp_get_wtime();
+#ifdef HBW_ALLOC
+    hbw_posix_memalign((void **)&tt->ind[m], 4096, nnz * sizeof(tt->ind[m][0]));
+#else
+    tt->ind[m] = (fidx_t*) splatt_malloc(nnz * sizeof(tt->ind[m][0]));
+#endif
+    tt->indmap[m] = NULL;
     fill_binary_fidx(tt->ind[m], nnz, &header, fin);
   }
-  fill_binary_val(tt->vals, nnz, &header, fin);
+
+  double t = omp_get_wtime();
+#ifdef HBW_ALLOC
+  hbw_posix_memalign((void **)&tt->vals, 4096, nnz * sizeof(tt->vals[0]));
+#else
+  tt->vals = (storage_val_t*) splatt_malloc(nnz * sizeof(tt->vals[0]));
+#endif
+  fill_binary_storage_val(tt->vals, nnz, &header, fin);
 
   return tt;
 }
@@ -206,7 +245,7 @@ int splatt_load(
   splatt_idx_t ** dims,
   splatt_idx_t * nnz,
   splatt_fidx_t *** inds,
-  splatt_val_t ** vals)
+  splatt_storage_val_t ** vals)
 {
   sptensor_t * tt = tt_read_file(fname);
   if(tt == NULL) {
@@ -490,12 +529,17 @@ void fill_binary_idx(
   if(header->idx_width == sizeof(splatt_idx_t)) {
     fread(buffer, sizeof(idx_t), count, fin);
   } else {
-    uint32_t *ubuf = (uint32_t *)splatt_malloc(sizeof(uint32_t)*count);
-    fread(ubuf, sizeof(uint32_t), count, fin);
+    int BUF_LEN = 1024*1024;
+    uint32_t *ubuf = (uint32_t *)splatt_malloc(sizeof(uint32_t)*BUF_LEN);
+
+    for(idx_t n=0; n < count; n += BUF_LEN) {
+      fread(ubuf, sizeof(ubuf[0]), SS_MIN(BUF_LEN, count - n), fin);
 #pragma omp parallel for
-    for(idx_t n=0; n < count; ++n) {
-      buffer[n] = ubuf[n];
+      for(idx_t i=0; i < SS_MIN(BUF_LEN, count - n); ++i) {
+        buffer[n + i] = ubuf[i];
+      }
     }
+
     splatt_free(ubuf);
   }
 }
@@ -509,12 +553,17 @@ void fill_binary_fidx(
   if(header->idx_width == sizeof(splatt_fidx_t)) {
     fread(buffer, sizeof(splatt_fidx_t), count, fin);
   } else {
-    uint32_t *ubuf = (uint32_t *)splatt_malloc(sizeof(uint32_t)*count);
-    fread(ubuf, sizeof(uint32_t), count, fin);
+    int BUF_LEN = 1024*1024;
+    uint32_t *ubuf = (uint32_t *)splatt_malloc(sizeof(uint32_t)*BUF_LEN);
+
+    for(idx_t n=0; n < count; n += BUF_LEN) {
+      fread(ubuf, sizeof(ubuf[0]), SS_MIN(BUF_LEN, count - n), fin);
 #pragma omp parallel for
-    for(idx_t n=0; n < count; ++n) {
-      buffer[n] = ubuf[n];
+      for(idx_t i=0; i < SS_MIN(BUF_LEN, count - n); ++i) {
+        buffer[n + i] = ubuf[i];
+      }
     }
+
     splatt_free(ubuf);
   }
 }
@@ -528,17 +577,45 @@ void fill_binary_val(
   if(header->val_width == sizeof(splatt_val_t)) {
     fread(buffer, sizeof(val_t), count, fin);
   } else {
-    float *fbuf = (float *)splatt_malloc(sizeof(float)*count);
-    fread(fbuf, sizeof(float), count, fin);
+    int BUF_LEN = 1024*1024;
+    float *fbuf = (float *)splatt_malloc(sizeof(float)*BUF_LEN);
+
+    for(idx_t n=0; n < count; n += BUF_LEN) {
+      fread(fbuf, sizeof(fbuf[0]), SS_MIN(BUF_LEN, count - n), fin);
 #pragma omp parallel for
-    for(idx_t n=0; n < count; ++n) {
-      buffer[n] = fbuf[n];
+      for(idx_t i=0; i < SS_MIN(BUF_LEN, count - n); ++i) {
+        buffer[n + i] = fbuf[i];
+      }
     }
+
     splatt_free(fbuf);
   }
 }
 
 
+void fill_binary_storage_val(
+    storage_val_t * const buffer,
+    idx_t const count,
+    bin_header const * const header,
+    FILE * fin)
+{
+  if(header->val_width == sizeof(storage_val_t)) {
+    fread(buffer, sizeof(storage_val_t), count, fin);
+  } else {
+    int BUF_LEN = 1024*1024;
+    storage_val_t *fbuf = (storage_val_t *)splatt_malloc(sizeof(storage_val_t)*BUF_LEN);
+
+    for(idx_t n=0; n < count; n += BUF_LEN) {
+      fread(fbuf, sizeof(fbuf[0]), SS_MIN(BUF_LEN, count - n), fin);
+#pragma omp parallel for
+      for(idx_t i=0; i < SS_MIN(BUF_LEN, count - n); ++i) {
+        buffer[n + i] = fbuf[i];
+      }
+    }
+
+    splatt_free(fbuf);
+  }
+}
 
 
 void hgraph_write(

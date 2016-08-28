@@ -18,6 +18,13 @@
 #endif
 #include <unistd.h>
 
+//#define BW_MEASUREMENT
+#ifdef BW_MEASUREMENT
+#include "perf/counters.h"
+#include "perf/counters.cpp"
+#include "perf/counters.h"
+#endif
+
 #define NLOCKS 1024
 static int locks_initialized = 0;
 
@@ -1075,32 +1082,36 @@ static void p_csf_mttkrp_root3_(
     per_thread_times[tid*8] -= omp_get_wtime();
 #endif
 
-    int nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
-    int count = nslices;
-    int first = 0;
-    int val = nnz_per_thread*tid;
+    idx_t nnz_per_thread = (ct->nnz + nthreads - 1)/nthreads;
+    idx_t count = nslices;
+    idx_t first = 0;
+    idx_t val = nnz_per_thread*tid;
     while (count > 0) {
-      int it = first; int step = count/2; it += step;
+      idx_t it = first; idx_t step = count/2; it += step;
       if (fptr[sptr[it]] < val) {
         first = it + 1;
         count -= step + 1;
       }
       else count = step;
     }
-    int s_begin = tid == 0 ? 0 : first;
+    idx_t s_begin = tid == 0 ? 0 : first;
 
     count = nslices - first;
     val += nnz_per_thread;
     while (count > 0) {
-      int it = first; int step = count/2; it += step;
+      idx_t it = first; idx_t step = count/2; it += step;
       if (fptr[sptr[it]] < val) {
         first = it + 1;
         count -= step + 1;
       }
       else count = step;
     }
-    int s_end = tid == nthreads - 1 ? nslices : first;
-    //printf("[%d] %ld-%ld %ld\n", tid, s_begin, s_end, fptr[sptr[s_end]] - fptr[sptr[s_begin]]);
+    idx_t s_end = tid == nthreads - 1 ? nslices : first;
+    //for (int i = 0; i < omp_get_num_threads(); ++i) {
+//#pragma omp barrier
+      //if (i == omp_get_thread_num()) printf("[%d] %ld-%ld %ld\n", tid, s_begin, s_end, fptr[sptr[s_end]] - fptr[sptr[s_begin]]);
+//#pragma omp barrier
+    //}
     /*if(8 == tid && s_begin == 841960) {
       for (int s=s_begin; s < s_end; ++s) {
         idx_t cnt = fptr[sptr[s + 1]] - fptr[sptr[s]];
@@ -3343,7 +3354,7 @@ static void p_csf_mttkrp_internal_(
 #endif
     } /* end foreach outer slice */
 
-#ifdef SPLATT_MEASURE_LOAD_BALANCE
+/*#ifdef SPLATT_MEASURE_LOAD_BALANCE
 #pragma omp barrier
 #pragma omp master
     {
@@ -3356,7 +3367,7 @@ static void p_csf_mttkrp_internal_(
       }
     }
 #pragma omp barrier
-#endif
+#endif*/
   }
   else {
 #ifdef SPLATT_MEASURE_LOAD_BALANCE
@@ -3431,6 +3442,12 @@ static void p_csf_mttkrp_internal_(
 }
 
 
+#ifdef BW_MEASUREMENT
+static ctrs ctr1, ctr2;
+bool bw_measurement_setup = false;
+#endif
+
+
 /* determine which function to call */
 static void p_root_decide(
     splatt_csf const * const tensor,
@@ -3439,6 +3456,19 @@ static void p_root_decide(
     thd_info * const thds,
     double const * const opts)
 {
+#ifdef BW_MEASUREMENT
+  double cpu_freq = SpMP::get_cpu_freq();
+
+  if(!bw_measurement_setup) {
+    setup();
+
+    bw_measurement_setup = true;
+  }
+  readctrs(&ctr1);
+  
+  unsigned long long begin_cycle = __rdtsc();
+#endif
+
   idx_t const nmodes = tensor->nmodes;
 
   sp_timer_t time;
@@ -3509,6 +3539,30 @@ static void p_root_decide(
     timer_stop(&thds[omp_get_thread_num()].ttime);
   } /* end omp parallel */
 
+#ifdef BW_MEASUREMENT
+  double dt = (__rdtsc() - begin_cycle)/cpu_freq;
+  readctrs(&ctr2);
+
+  double total_edc_rd = 0, total_edc_wr = 0;
+  for (int j = 0; j < NEDC; ++j) {
+    total_edc_rd += ctr2.edcrd[j] - ctr1.edcrd[j];
+    total_edc_wr += ctr2.edcwr[j] - ctr1.edcwr[j];
+  }
+  double mcdram_rdbw = 64*total_edc_rd/dt;
+  double mcdram_wrbw = 64*total_edc_wr/dt;
+
+  double total_mc_rd = 0, total_mc_wr = 0;
+  for (int j = 0; j < NMC; ++j) {
+    total_mc_rd += ctr2.mcrd[j] - ctr1.mcrd[j];
+    total_mc_wr += ctr2.mcwr[j] - ctr1.mcwr[j];
+  }
+  double ddr_rdbw = 64*total_mc_rd/dt;
+  double ddr_wrbw = 64*total_mc_wr/dt;
+
+  printf("mcdram_rdbw = %g gbps, mcdram_wrbw = %g gbps\n", mcdram_rdbw/1e9, mcdram_wrbw/1e9);
+  printf("ddr_rdbw = %g gbps, ddr_wrbw = %g gbps\n", ddr_rdbw/1e9, ddr_wrbw/1e9);
+#endif
+
   timer_stop(&time);
   if (opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
     size_t mbytes = 0;
@@ -3539,6 +3593,19 @@ static void p_leaf_decide(
     thd_info * const thds,
     double const * const opts)
 {
+#ifdef BW_MEASUREMENT
+  double cpu_freq = SpMP::get_cpu_freq();
+
+  if(!bw_measurement_setup) {
+    setup();
+
+    bw_measurement_setup = true;
+  }
+  readctrs(&ctr1);
+  
+  unsigned long long begin_cycle = __rdtsc();
+#endif
+
   idx_t const nmodes = tensor->nmodes;
   idx_t const depth = nmodes - 1;
 
@@ -3646,6 +3713,30 @@ static void p_leaf_decide(
     timer_stop(&thds[omp_get_thread_num()].ttime);
   } /* end omp parallel */
 
+#ifdef BW_MEASUREMENT
+  double dt = (__rdtsc() - begin_cycle)/cpu_freq;
+  readctrs(&ctr2);
+
+  double total_edc_rd = 0, total_edc_wr = 0;
+  for (int j = 0; j < NEDC; ++j) {
+    total_edc_rd += ctr2.edcrd[j] - ctr1.edcrd[j];
+    total_edc_wr += ctr2.edcwr[j] - ctr1.edcwr[j];
+  }
+  double mcdram_rdbw = 64*total_edc_rd/dt;
+  double mcdram_wrbw = 64*total_edc_wr/dt;
+
+  double total_mc_rd = 0, total_mc_wr = 0;
+  for (int j = 0; j < NMC; ++j) {
+    total_mc_rd += ctr2.mcrd[j] - ctr1.mcrd[j];
+    total_mc_wr += ctr2.mcwr[j] - ctr1.mcwr[j];
+  }
+  double ddr_rdbw = 64*total_mc_rd/dt;
+  double ddr_wrbw = 64*total_mc_wr/dt;
+
+  printf("mcdram_rdbw = %g gbps, mcdram_wrbw = %g gbps\n", mcdram_rdbw/1e9, mcdram_wrbw/1e9);
+  printf("ddr_rdbw = %g gbps, ddr_wrbw = %g gbps\n", ddr_rdbw/1e9, ddr_wrbw/1e9);
+#endif
+
   timer_stop(&time);
   if (opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
     size_t mbytes = 0;
@@ -3676,6 +3767,19 @@ static void p_intl_decide(
     thd_info * const thds,
     double const * const opts)
 {
+#ifdef BW_MEASUREMENT
+  double cpu_freq = SpMP::get_cpu_freq();
+
+  if(!bw_measurement_setup) {
+    setup();
+
+    bw_measurement_setup = true;
+  }
+  readctrs(&ctr1);
+  
+  unsigned long long begin_cycle = __rdtsc();
+#endif
+
   idx_t const nmodes = tensor->nmodes;
   idx_t const depth = csf_mode_depth(mode, tensor->dim_perm, nmodes);
 
@@ -3809,6 +3913,30 @@ static void p_intl_decide(
 
     timer_stop(&thds[omp_get_thread_num()].ttime);
   } /* end omp parallel */
+
+#ifdef BW_MEASUREMENT
+  double dt = (__rdtsc() - begin_cycle)/cpu_freq;
+  readctrs(&ctr2);
+
+  double total_edc_rd = 0, total_edc_wr = 0;
+  for (int j = 0; j < NEDC; ++j) {
+    total_edc_rd += ctr2.edcrd[j] - ctr1.edcrd[j];
+    total_edc_wr += ctr2.edcwr[j] - ctr1.edcwr[j];
+  }
+  double mcdram_rdbw = 64*total_edc_rd/dt;
+  double mcdram_wrbw = 64*total_edc_wr/dt;
+
+  double total_mc_rd = 0, total_mc_wr = 0;
+  for (int j = 0; j < NMC; ++j) {
+    total_mc_rd += ctr2.mcrd[j] - ctr1.mcrd[j];
+    total_mc_wr += ctr2.mcwr[j] - ctr1.mcwr[j];
+  }
+  double ddr_rdbw = 64*total_mc_rd/dt;
+  double ddr_wrbw = 64*total_mc_wr/dt;
+
+  printf("mcdram_rdbw = %g gbps, mcdram_wrbw = %g gbps\n", mcdram_rdbw/1e9, mcdram_wrbw/1e9);
+  printf("ddr_rdbw = %g gbps, ddr_wrbw = %g gbps\n", ddr_rdbw/1e9, ddr_wrbw/1e9);
+#endif
 
   timer_stop(&time);
   if (opts[SPLATT_OPTION_VERBOSITY] > SPLATT_VERBOSITY_LOW) {
@@ -3977,7 +4105,7 @@ void mttkrp_splatt(
   idx_t const * const restrict fptr = ft->fptr;
   idx_t const * const restrict fids = ft->fids;
   idx_t const * const restrict inds = ft->inds;
-  val_t const * const restrict vals = ft->vals;
+  storage_val_t const * const restrict vals = ft->vals;
 
   #pragma omp parallel
   {
@@ -3993,7 +4121,7 @@ void mttkrp_splatt(
       for(idx_t f=sptr[s]; f < sptr[s+1]; ++f) {
         /* first entry of the fiber is used to initialize accumF */
         idx_t const jjfirst  = fptr[f];
-        val_t const vfirst   = vals[jjfirst];
+        storage_val_t const vfirst   = vals[jjfirst];
         val_t const * const restrict bv = bvals + (inds[jjfirst] * rank);
         for(idx_t r=0; r < rank; ++r) {
           accumF[r] = vfirst * bv[r];
@@ -4001,7 +4129,7 @@ void mttkrp_splatt(
 
         /* foreach nnz in fiber */
         for(idx_t jj=fptr[f]+1; jj < fptr[f+1]; ++jj) {
-          val_t const v = vals[jj];
+          storage_val_t const v = vals[jj];
           val_t const * const restrict bv = bvals + (inds[jj] * rank);
           for(idx_t r=0; r < rank; ++r) {
             accumF[r] += v * bv[r];
@@ -4046,7 +4174,7 @@ void mttkrp_splatt_sync_tiled(
   idx_t const * const restrict fptr = ft->fptr;
   idx_t const * const restrict fids = ft->fids;
   idx_t const * const restrict inds = ft->inds;
-  val_t const * const restrict vals = ft->vals;
+  storage_val_t const * const restrict vals = ft->vals;
 
   #pragma omp parallel
   {
@@ -4115,7 +4243,7 @@ void mttkrp_splatt_coop_tiled(
   idx_t const * const restrict fptr = ft->fptr;
   idx_t const * const restrict fids = ft->fids;
   idx_t const * const restrict inds = ft->inds;
-  val_t const * const restrict vals = ft->vals;
+  storage_val_t const * const restrict vals = ft->vals;
 
   #pragma omp parallel
   {
@@ -4256,7 +4384,7 @@ void mttkrp_ttbox(
   fidx_t const * const restrict indB =
     mode == 2 ? tt->ind[1] : tt->ind[2];
 
-  val_t const * const restrict vals = tt->vals;
+  storage_val_t const * const restrict vals = tt->vals;
 
   for(idx_t r=0; r < rank; ++r) {
     val_t       * const restrict mv =  M->vals + (r * I);
@@ -4297,7 +4425,7 @@ void mttkrp_stream(
     mvals[m] = mats[m]->vals;
   }
 
-  val_t const * const restrict vals = tt->vals;
+  storage_val_t const * const restrict vals = tt->vals;
 
   /* stream through nnz */
   for(idx_t n=0; n < tt->nnz; ++n) {
