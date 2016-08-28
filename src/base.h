@@ -24,6 +24,7 @@
 #define val_t splatt_val_t
 #define idx_t splatt_idx_t
 #define fidx_t splatt_fidx_t
+#define storage_val_t splatt_storage_val_t
   /* May want to use narrower types for indices within a factor matrix
    * than indices for accessing non-zeros.
    */
