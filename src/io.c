@@ -116,6 +116,11 @@ static sptensor_t * p_tt_read_file(
 
   free(line);
 
+  for(int i=0; i < tt->nmodes; ++i) {
+    printf("%d ", tt->ind[i][123456]);
+  }
+  printf("%f\n", tt->vals[123456]);
+
   return tt;
 }
 
@@ -603,7 +608,7 @@ void fill_binary_storage_val(
     fread(buffer, sizeof(storage_val_t), count, fin);
   } else {
     int BUF_LEN = 1024*1024;
-    storage_val_t *fbuf = (storage_val_t *)splatt_malloc(sizeof(storage_val_t)*BUF_LEN);
+    float *fbuf = (float *)splatt_malloc(sizeof(float)*BUF_LEN);
 
     for(idx_t n=0; n < count; n += BUF_LEN) {
       fread(fbuf, sizeof(fbuf[0]), SS_MIN(BUF_LEN, count - n), fin);
