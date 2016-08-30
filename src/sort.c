@@ -1278,6 +1278,7 @@ static void p_counting_sort_hybrid(sptensor_t * const tt, idx_t *cmplt)
     }
   }
   splatt_free(new_ind);
+
 #ifdef HBW_ALLOC
   hbw_free(tt->vals);
 #else
