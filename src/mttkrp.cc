@@ -995,13 +995,53 @@ static void p_csf_mttkrp_root_tiled3(
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
-  if (nfactors == 16) {
+  if(16 == nfactors) {
     for(idx_t s=0; s < nslices; ++s) {
       idx_t const fid = (sids == NULL) ? s : sids[s];
 
       val_t * const restrict mv = ovals + (fid * nfactors);
 
       p_csf_mttkrp_root3_kernel_<16, true>(
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, s);
+    }
+  }
+  else if(32 == nfactors) {
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
+
+      val_t * const restrict mv = ovals + (fid * nfactors);
+
+      p_csf_mttkrp_root3_kernel_<32, true>(
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, s);
+    }
+  }
+  else if(64 == nfactors) {
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
+
+      val_t * const restrict mv = ovals + (fid * nfactors);
+
+      p_csf_mttkrp_root3_kernel_<64, true>(
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, s);
+    }
+  }
+  else if(128 == nfactors) {
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
+
+      val_t * const restrict mv = ovals + (fid * nfactors);
+
+      p_csf_mttkrp_root3_kernel_<128, true>(
+        vals, sptr, fptr, fids, inds, avals, bvals, mv, s);
+    }
+  }
+  else if(256 == nfactors) {
+    for(idx_t s=0; s < nslices; ++s) {
+      idx_t const fid = (sids == NULL) ? s : sids[s];
+
+      val_t * const restrict mv = ovals + (fid * nfactors);
+
+      p_csf_mttkrp_root3_kernel_<256, true>(
         vals, sptr, fptr, fids, inds, avals, bvals, mv, s);
     }
   }
@@ -1330,8 +1370,20 @@ static void p_csf_mttkrp_root3(
   assert(ct->nmodes == 3);
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
-  if (nfactors == 16) {
+  if(16 == nfactors) {
     p_csf_mttkrp_root3_<16, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(32 == nfactors) {
+    p_csf_mttkrp_root3_<32, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(64 == nfactors) {
+    p_csf_mttkrp_root3_<64, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(128 == nfactors) {
+    p_csf_mttkrp_root3_<128, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(256 == nfactors) {
+    p_csf_mttkrp_root3_<256, SYNC_TYPE>(ct, tile_id, mats, thds);
   }
   else
   {
@@ -1536,8 +1588,20 @@ static void p_csf_mttkrp_internal3(
   assert(ct->nmodes == 3);
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
-  if (nfactors == 16) {
+  if(16 == nfactors) {
     p_csf_mttkrp_internal3_<16, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(32 == nfactors) {
+    p_csf_mttkrp_internal3_<32, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(64 == nfactors) {
+    p_csf_mttkrp_internal3_<64, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(128 == nfactors) {
+    p_csf_mttkrp_internal3_<128, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(256 == nfactors) {
+    p_csf_mttkrp_internal3_<256, SYNC_TYPE>(ct, tile_id, mats, thds);
   }
   else
   {
@@ -1759,8 +1823,20 @@ static void p_csf_mttkrp_leaf3(
   val_t * const ovals = mats[MAX_NMODES]->vals;
   idx_t const nfactors = mats[MAX_NMODES]->J;
 
-  if (nfactors == 16) {
+  if(16 == nfactors) {
     p_csf_mttkrp_leaf3_<16, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(32 == nfactors) {
+    p_csf_mttkrp_leaf3_<32, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(64 == nfactors) {
+    p_csf_mttkrp_leaf3_<64, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(128 == nfactors) {
+    p_csf_mttkrp_leaf3_<128, SYNC_TYPE>(ct, tile_id, mats, thds);
+  }
+  else if(256 == nfactors) {
+    p_csf_mttkrp_leaf3_<256, SYNC_TYPE>(ct, tile_id, mats, thds);
   }
   else
   {
@@ -2140,7 +2216,7 @@ static void p_csf_mttkrp_leaf_tiled3(
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
-  if (nfactors == 16) {
+  if(16 == nfactors) {
     if(PARALLELIZE_EACH_TILE) {
 #pragma omp for schedule(dynamic, 16) nowait
       for(idx_t s=0; s < nslices; ++s) {
@@ -2173,6 +2249,170 @@ static void p_csf_mttkrp_leaf_tiled3(
         val_t const * const restrict rv = avals + (fid * nfactors);
 
         p_csf_mttkrp_leaf3_kernel_<16, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+      }
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[omp_get_thread_num()*8] += omp_get_wtime();
+#endif
+    }
+  }
+  else if(32 == nfactors) {
+    if(PARALLELIZE_EACH_TILE) {
+#pragma omp for schedule(dynamic, 16) nowait
+      for(idx_t s=0; s < nslices; ++s) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[omp_get_thread_num()*8] -= omp_get_wtime();
+#endif
+
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_leaf3_kernel_<32, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[omp_get_thread_num()*8] += omp_get_wtime();
+#endif
+      }
+    }
+    else {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[omp_get_thread_num()*8] -= omp_get_wtime();
+#endif
+
+      for(idx_t s=0; s < nslices; ++s) {
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_leaf3_kernel_<32, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+      }
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[omp_get_thread_num()*8] += omp_get_wtime();
+#endif
+    }
+  }
+  else if(64 == nfactors) {
+    if(PARALLELIZE_EACH_TILE) {
+#pragma omp for schedule(dynamic, 16) nowait
+      for(idx_t s=0; s < nslices; ++s) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[omp_get_thread_num()*8] -= omp_get_wtime();
+#endif
+
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_leaf3_kernel_<64, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[omp_get_thread_num()*8] += omp_get_wtime();
+#endif
+      }
+    }
+    else {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[omp_get_thread_num()*8] -= omp_get_wtime();
+#endif
+
+      for(idx_t s=0; s < nslices; ++s) {
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_leaf3_kernel_<64, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+      }
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[omp_get_thread_num()*8] += omp_get_wtime();
+#endif
+    }
+  }
+  else if(128 == nfactors) {
+    if(PARALLELIZE_EACH_TILE) {
+#pragma omp for schedule(dynamic, 16) nowait
+      for(idx_t s=0; s < nslices; ++s) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[omp_get_thread_num()*8] -= omp_get_wtime();
+#endif
+
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_leaf3_kernel_<128, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[omp_get_thread_num()*8] += omp_get_wtime();
+#endif
+      }
+    }
+    else {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[omp_get_thread_num()*8] -= omp_get_wtime();
+#endif
+
+      for(idx_t s=0; s < nslices; ++s) {
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_leaf3_kernel_<128, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+      }
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[omp_get_thread_num()*8] += omp_get_wtime();
+#endif
+    }
+  }
+  else if(256 == nfactors) {
+    if(PARALLELIZE_EACH_TILE) {
+#pragma omp for schedule(dynamic, 16) nowait
+      for(idx_t s=0; s < nslices; ++s) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[omp_get_thread_num()*8] -= omp_get_wtime();
+#endif
+
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_leaf3_kernel_<256, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[omp_get_thread_num()*8] += omp_get_wtime();
+#endif
+      }
+    }
+    else {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[omp_get_thread_num()*8] -= omp_get_wtime();
+#endif
+
+      for(idx_t s=0; s < nslices; ++s) {
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_leaf3_kernel_<256, SPLATT_SYNC_NOSYNC, true>(
           vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
       }
 
@@ -2790,7 +3030,7 @@ static void p_csf_mttkrp_internal_tiled3(
 
   idx_t const nslices = ct->pt[tile_id].nfibs[0];
 
-  if (nfactors == 16) {
+  if(16 == nfactors) {
     if(PARALLELIZE_EACH_TILE) {
 
 #pragma omp for schedule(dynamic, 16) nowait
@@ -2821,6 +3061,158 @@ static void p_csf_mttkrp_internal_tiled3(
         val_t const * const restrict rv = avals + (fid * nfactors);
 
         p_csf_mttkrp_internal3_kernel_<16, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+      }
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[tid*8] += omp_get_wtime();
+#endif
+    }
+  }
+  else if(32 == nfactors) {
+    if(PARALLELIZE_EACH_TILE) {
+
+#pragma omp for schedule(dynamic, 16) nowait
+      for(idx_t s=0; s < nslices; ++s) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[tid*8] -= omp_get_wtime();
+#endif
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_internal3_kernel_<32, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[tid*8] += omp_get_wtime();
+#endif
+      }
+    }
+    else {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[tid*8] -= omp_get_wtime();
+#endif
+      for(idx_t s=0; s < nslices; ++s) {
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_internal3_kernel_<32, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+      }
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[tid*8] += omp_get_wtime();
+#endif
+    }
+  }
+  else if(64 == nfactors) {
+    if(PARALLELIZE_EACH_TILE) {
+
+#pragma omp for schedule(dynamic, 16) nowait
+      for(idx_t s=0; s < nslices; ++s) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[tid*8] -= omp_get_wtime();
+#endif
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_internal3_kernel_<64, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[tid*8] += omp_get_wtime();
+#endif
+      }
+    }
+    else {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[tid*8] -= omp_get_wtime();
+#endif
+      for(idx_t s=0; s < nslices; ++s) {
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_internal3_kernel_<64, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+      }
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[tid*8] += omp_get_wtime();
+#endif
+    }
+  }
+  else if(128 == nfactors) {
+    if(PARALLELIZE_EACH_TILE) {
+
+#pragma omp for schedule(dynamic, 16) nowait
+      for(idx_t s=0; s < nslices; ++s) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[tid*8] -= omp_get_wtime();
+#endif
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_internal3_kernel_<128, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[tid*8] += omp_get_wtime();
+#endif
+      }
+    }
+    else {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[tid*8] -= omp_get_wtime();
+#endif
+      for(idx_t s=0; s < nslices; ++s) {
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_internal3_kernel_<128, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+      }
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[tid*8] += omp_get_wtime();
+#endif
+    }
+  }
+  else if(256 == nfactors) {
+    if(PARALLELIZE_EACH_TILE) {
+
+#pragma omp for schedule(dynamic, 16) nowait
+      for(idx_t s=0; s < nslices; ++s) {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[tid*8] -= omp_get_wtime();
+#endif
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_internal3_kernel_<256, SPLATT_SYNC_NOSYNC, true>(
+          vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+        per_thread_times[tid*8] += omp_get_wtime();
+#endif
+      }
+    }
+    else {
+#ifdef SPLATT_MEASURE_LOAD_BALANCE
+      per_thread_times[tid*8] -= omp_get_wtime();
+#endif
+      for(idx_t s=0; s < nslices; ++s) {
+        idx_t const fid = (sids == NULL) ? s : sids[s];
+
+        /* root row */
+        val_t const * const restrict rv = avals + (fid * nfactors);
+
+        p_csf_mttkrp_internal3_kernel_<256, SPLATT_SYNC_NOSYNC, true>(
           vals, sptr, fptr, fids, inds, rv, bvals, ovals, s);
       }
 #ifdef SPLATT_MEASURE_LOAD_BALANCE
@@ -3624,7 +4016,7 @@ static void p_root_decide(
   timer_fstart(&time);
 
   matrix_t * const M = mats[MAX_NMODES];
-  if (nmodes != 3 || tensor->which_tile != SPLATT_NOTILE || M->J != 16)
+  if (nmodes != 3 || tensor->which_tile != SPLATT_NOTILE)
     par_memset(M->vals, 0, M->I * M->J * sizeof(val_t));
 
   idx_t const nfactors = mats[0]->J;
@@ -3651,6 +4043,18 @@ static void p_root_decide(
       for(idx_t t=0; t < tensor->ntiles; ++t) {
         if(16 == nfactors) {
           p_csf_mttkrp_root_<16, SYNC_TYPE>(tensor, t, mats, thds);
+        }
+        else if(32 == nfactors) {
+          p_csf_mttkrp_root_<32, SYNC_TYPE>(tensor, t, mats, thds);
+        }
+        else if(64 == nfactors) {
+          p_csf_mttkrp_root_<64, SYNC_TYPE>(tensor, t, mats, thds);
+        }
+        else if(128 == nfactors) {
+          p_csf_mttkrp_root_<128, SYNC_TYPE>(tensor, t, mats, thds);
+        }
+        else if(256 == nfactors) {
+          p_csf_mttkrp_root_<256, SYNC_TYPE>(tensor, t, mats, thds);
         }
         else {
           p_csf_mttkrp_root<SYNC_TYPE>(tensor, t, mats, thds);
@@ -3803,6 +4207,18 @@ static void p_leaf_decide(
         if(16 == nfactors) {
           p_csf_mttkrp_leaf_tiled_<16, true>(tensor, 0, mats, thds, opts);
         }
+        else if(32 == nfactors) {
+          p_csf_mttkrp_leaf_tiled_<32, true>(tensor, 0, mats, thds, opts);
+        }
+        else if(64 == nfactors) {
+          p_csf_mttkrp_leaf_tiled_<64, true>(tensor, 0, mats, thds, opts);
+        }
+        else if(128 == nfactors) {
+          p_csf_mttkrp_leaf_tiled_<128, true>(tensor, 0, mats, thds, opts);
+        }
+        else if(256 == nfactors) {
+          p_csf_mttkrp_leaf_tiled_<256, true>(tensor, 0, mats, thds, opts);
+        }
         else {
           p_csf_mttkrp_leaf_tiled<true>(tensor, 0, mats, thds, opts);
         }
@@ -3824,6 +4240,18 @@ static void p_leaf_decide(
         if(16 == nfactors) {
           p_csf_mttkrp_leaf_<16, SYNC_TYPE>(tensor, 0, mats, thds);
         }
+        else if(32 == nfactors) {
+          p_csf_mttkrp_leaf_<32, SYNC_TYPE>(tensor, 0, mats, thds);
+        }
+        else if(64 == nfactors) {
+          p_csf_mttkrp_leaf_<64, SYNC_TYPE>(tensor, 0, mats, thds);
+        }
+        else if(128 == nfactors) {
+          p_csf_mttkrp_leaf_<128, SYNC_TYPE>(tensor, 0, mats, thds);
+        }
+        else if(256 == nfactors) {
+          p_csf_mttkrp_leaf_<256, SYNC_TYPE>(tensor, 0, mats, thds);
+        }
         else {
           p_csf_mttkrp_leaf<SYNC_TYPE>(tensor, 0, mats, thds);
         }
@@ -3837,6 +4265,18 @@ static void p_leaf_decide(
         while(tid != TILE_END) {
           if(16 == nfactors) {
             p_csf_mttkrp_leaf_tiled_<16>(tensor, tid, mats, thds, opts);
+          }
+          else if(32 == nfactors) {
+            p_csf_mttkrp_leaf_tiled_<32>(tensor, tid, mats, thds, opts);
+          }
+          else if(64 == nfactors) {
+            p_csf_mttkrp_leaf_tiled_<64>(tensor, tid, mats, thds, opts);
+          }
+          else if(128 == nfactors) {
+            p_csf_mttkrp_leaf_tiled_<128>(tensor, tid, mats, thds, opts);
+          }
+          else if(256 == nfactors) {
+            p_csf_mttkrp_leaf_tiled_<256>(tensor, tid, mats, thds, opts);
           }
           else {
             p_csf_mttkrp_leaf_tiled(tensor, tid, mats, thds, opts);
@@ -3980,6 +4420,18 @@ static void p_intl_decide(
           if(16 == nfactors) {
             p_csf_mttkrp_internal_tiled_<16, true>(tensor, 0, mats, mode, thds, opts);
           }
+          else if(32 == nfactors) {
+            p_csf_mttkrp_internal_tiled_<32, true>(tensor, 0, mats, mode, thds, opts);
+          }
+          else if(64 == nfactors) {
+            p_csf_mttkrp_internal_tiled_<64, true>(tensor, 0, mats, mode, thds, opts);
+          }
+          else if(128 == nfactors) {
+            p_csf_mttkrp_internal_tiled_<128, true>(tensor, 0, mats, mode, thds, opts);
+          }
+          else if(256 == nfactors) {
+            p_csf_mttkrp_internal_tiled_<256, true>(tensor, 0, mats, mode, thds, opts);
+          }
           else {
             p_csf_mttkrp_internal_tiled<true>(tensor, 0, mats, mode, thds, opts);
           }
@@ -3989,6 +4441,18 @@ static void p_intl_decide(
           for(idx_t t=0; t < tensor->ntiles; ++t) {
             if(16 == nfactors) {
               p_csf_mttkrp_internal_tiled_<16>(tensor, t, mats, mode, thds, opts);
+            }
+            else if(32 == nfactors) {
+              p_csf_mttkrp_internal_tiled_<32>(tensor, t, mats, mode, thds, opts);
+            }
+            else if(64 == nfactors) {
+              p_csf_mttkrp_internal_tiled_<64>(tensor, t, mats, mode, thds, opts);
+            }
+            else if(128 == nfactors) {
+              p_csf_mttkrp_internal_tiled_<128>(tensor, t, mats, mode, thds, opts);
+            }
+            else if(256 == nfactors) {
+              p_csf_mttkrp_internal_tiled_<256>(tensor, t, mats, mode, thds, opts);
             }
             else {
               p_csf_mttkrp_internal_tiled(tensor, t, mats, mode, thds, opts);
@@ -4014,6 +4478,18 @@ static void p_intl_decide(
         if(16 == nfactors) {
           p_csf_mttkrp_internal_<16, SYNC_TYPE>(tensor, 0, mats, mode, thds);
         }
+        else if(32 == nfactors) {
+          p_csf_mttkrp_internal_<32, SYNC_TYPE>(tensor, 0, mats, mode, thds);
+        }
+        else if(64 == nfactors) {
+          p_csf_mttkrp_internal_<64, SYNC_TYPE>(tensor, 0, mats, mode, thds);
+        }
+        else if(128 == nfactors) {
+          p_csf_mttkrp_internal_<128, SYNC_TYPE>(tensor, 0, mats, mode, thds);
+        }
+        else if(256 == nfactors) {
+          p_csf_mttkrp_internal_<256, SYNC_TYPE>(tensor, 0, mats, mode, thds);
+        }
         else {
           p_csf_mttkrp_internal<SYNC_TYPE>(tensor, 0, mats, mode, thds);
         }
@@ -4023,6 +4499,18 @@ static void p_intl_decide(
         for(idx_t t=0; t < tensor->ntiles; ++t) {
           if(16 == nfactors) {
             p_csf_mttkrp_internal_<16, SYNC_TYPE>(tensor, t, mats, mode, thds);
+          }
+          else if(32 == nfactors) {
+            p_csf_mttkrp_internal_<32, SYNC_TYPE>(tensor, t, mats, mode, thds);
+          }
+          else if(64 == nfactors) {
+            p_csf_mttkrp_internal_<64, SYNC_TYPE>(tensor, t, mats, mode, thds);
+          }
+          else if(128 == nfactors) {
+            p_csf_mttkrp_internal_<128, SYNC_TYPE>(tensor, t, mats, mode, thds);
+          }
+          else if(256 == nfactors) {
+            p_csf_mttkrp_internal_<256, SYNC_TYPE>(tensor, t, mats, mode, thds);
           }
           else {
             p_csf_mttkrp_internal<SYNC_TYPE>(tensor, t, mats, mode, thds);
@@ -4038,6 +4526,18 @@ static void p_intl_decide(
         while(tid != TILE_END) {
           if(16 == nfactors) {
             p_csf_mttkrp_internal_tiled_<16>(tensor, tid, mats, mode, thds, opts);
+          }
+          else if(32 == nfactors) {
+            p_csf_mttkrp_internal_tiled_<32>(tensor, tid, mats, mode, thds, opts);
+          }
+          else if(64 == nfactors) {
+            p_csf_mttkrp_internal_tiled_<64>(tensor, tid, mats, mode, thds, opts);
+          }
+          else if(128 == nfactors) {
+            p_csf_mttkrp_internal_tiled_<128>(tensor, tid, mats, mode, thds, opts);
+          }
+          else if(256 == nfactors) {
+            p_csf_mttkrp_internal_tiled_<256>(tensor, tid, mats, mode, thds, opts);
           }
           else {
             p_csf_mttkrp_internal_tiled(tensor, tid, mats, mode, thds, opts);
