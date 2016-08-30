@@ -354,6 +354,9 @@ typedef struct splatt_csf
 
   /** @brief flops per MTTKRP -- lazy initialized */
   size_t mttkrp_flops[SPLATT_MAX_NMODES];
+
+  splatt_fidx_t *hub_slices;
+  splatt_fidx_t nslice_hubs;
 } splatt_csf;
 
 
