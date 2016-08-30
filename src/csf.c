@@ -540,6 +540,7 @@ static void p_set_nfibs_root(
   for(idx_t x=1; x < nnz; ++x) {
     assert(ttind[x-1] <= ttind[x]);
     if(ttind[x] != ttind[x-1]) {
+      assert(nfibs == ttind[x]);
       ++nfibs;
     }
   }
@@ -547,6 +548,106 @@ static void p_set_nfibs_root(
   assert(nfibs <= ct->dims[ct->dim_perm[0]]);
 }
 
+/**
+* @brief Construct the sparsity structure of the outer-mode of a CSF tensor.
+*
+* @param ct The CSF tensor to construct.
+* @param tt The coordinate tensor to construct from. Assumed to be already
+*            sorted.
+* @param tile_id The ID of the tile to construct.
+* @param nnztile_ptr A pointer into 'tt' that marks the start of each tile.
+*/
+static void p_mk_outerptr_hub(
+  splatt_csf * const ct,
+  sptensor_t const * const tt,
+  idx_t const tile_id,
+  idx_t const * const nnztile_ptr)
+{
+  idx_t const nnzstart = nnztile_ptr[tile_id];
+  idx_t const nnzend   = nnztile_ptr[tile_id+1];
+  idx_t const nnz = nnzend - nnzstart;
+
+  assert(nnzstart < nnzend);
+
+  /* the mode after accounting for dim_perm */
+  fidx_t const * const restrict ttind = tt->ind[ct->dim_perm[0]] + nnzstart;
+
+  /* grab sparsity pattern */
+  csf_sparsity * const pt = ct->pt + tile_id;
+
+  idx_t *nfibs = malloc(sizeof(idx_t)*(omp_get_max_threads() + 1));
+  nfibs[0] = 1;
+
+#pragma omp parallel
+  {
+    int nthreads = omp_get_num_threads();
+    int tid = omp_get_thread_num();
+
+    idx_t x_per_thread = (nnz + nthreads - 1)/nthreads;
+    idx_t x_begin = SS_MAX(SS_MIN(x_per_thread*tid, nnz), 1);
+    idx_t x_end = SS_MIN(x_per_thread*(tid + 1), nnz);
+
+    idx_t nfibs_private = 0;
+
+    for(idx_t x = x_begin; x < x_end; ++x) {
+      assert(ttind[x-1] <= ttind[x]);
+      if(ttind[x] != ttind[x-1]) {
+        ++nfibs_private;
+      }
+    }
+    nfibs[tid + 1] = nfibs_private;
+
+#pragma omp barrier
+#pragma omp master
+    {
+      /* prefix sum */
+      for(int t = 0; t < nthreads; ++t) {
+        nfibs[t + 1] += nfibs[t];
+      }
+      ct->pt[tile_id].nfibs[0] = nfibs[nthreads];
+      assert(nfibs[nthreads] <= ct->dims[ct->dim_perm[0]]);
+
+      pt->fptr[0] = splatt_malloc((nfibs[nthreads]+1) * sizeof(**(pt->fptr)));
+      if(ct->ntiles > 1) {
+        pt->fids[0] = splatt_malloc(nfibs[nthreads] * sizeof(**(pt->fids)));
+      } else {
+        pt->fids[0] = NULL;
+      }
+    }
+#pragma omp barrier
+
+    idx_t  * const restrict fp = pt->fptr[0];
+    fidx_t  * const restrict fi = pt->fids[0];
+#pragma omp master
+    {
+      fp[0] = 0;
+      if(fi != NULL) {
+        fi[0] = ttind[0];
+      }
+      fp[nfibs[nthreads]] = nnz;
+    }
+
+    idx_t nfound = nfibs[tid];
+    if(fi != NULL) {
+      for(idx_t n=x_begin; n < x_end; ++n) {
+        /* check for end of outer index */
+        if(ttind[n] != ttind[n-1]) {
+          fi[nfound] = ttind[n];
+          fp[nfound++] = n;
+        }
+      }
+    }
+    else {
+      for(idx_t n=x_begin; n < x_end; ++n) {
+        /* check for end of outer index */
+        if(ttind[n] != ttind[n-1]) {
+          assert(nfound == ttind[n]);
+          fp[nfound++] = n;
+        }
+      }
+    }
+  } /* omp parallel */
+}
 
 /**
 * @brief Construct the sparsity structure of the outer-mode of a CSF tensor.
@@ -600,6 +701,7 @@ static void p_mk_outerptr(
       for(idx_t n=1; n < nnz; ++n) {
         /* check for end of outer index */
         if(ttind[n] != ttind[n-1]) {
+          assert(nfound == ttind[n]);
           fp[nfound++] = n;
         }
       }
@@ -623,7 +725,7 @@ static void p_mk_outerptr(
       idx_t nfibs_private = 0;
 
       for(idx_t x = x_begin; x < x_end; ++x) {
-        assert(ttind[x-1] <= ttind[x]);
+        assert(ct->nslice_hubs > 0 || ttind[x-1] <= ttind[x]);
         if(ttind[x] != ttind[x-1]) {
           ++nfibs_private;
         }
@@ -641,7 +743,7 @@ static void p_mk_outerptr(
         assert(nfibs[nthreads] <= ct->dims[ct->dim_perm[0]]);
 
         pt->fptr[0] = splatt_malloc((nfibs[nthreads]+1) * sizeof(**(pt->fptr)));
-        if(ct->ntiles > 1) {
+        if(ct->ntiles > 1 || ct->nslice_hubs > 0) {
           pt->fids[0] = splatt_malloc(nfibs[nthreads] * sizeof(**(pt->fids)));
         } else {
           pt->fids[0] = NULL;
@@ -674,6 +776,7 @@ static void p_mk_outerptr(
         for(idx_t n=x_begin; n < x_end; ++n) {
           /* check for end of outer index */
           if(ttind[n] != ttind[n-1]) {
+            assert(nfound == ttind[n]);
             fp[nfound++] = n;
           }
         }
@@ -898,6 +1001,101 @@ static void p_csf_alloc_untiled(
 
   csf_sparsity * const pt = ct->pt;
 
+  /* check hub slices in root mode */
+  idx_t last_fp = 0;
+  ct->hub_slices = (splatt_fidx_t *)splatt_malloc(4 * omp_get_max_threads() * sizeof(int));
+  ct->nslice_hubs = 0;
+  idx_t nnz_hubs = 0;
+#define FINE_GRAIN_PARTITION_OF_HUBS
+#ifdef FINE_GRAIN_PARTITION_OF_HUBS
+  for(idx_t i=1; i < ct->nnz; ++i) {
+    if(tt->ind[ct->dim_perm[0]][i] != tt->ind[ct->dim_perm[0]][i-1]) {
+      if(i - last_fp >= 0.5*ct->nnz/omp_get_max_threads()) {
+        ct->hub_slices[ct->nslice_hubs++] = tt->ind[ct->dim_perm[0]][i-1];
+        nnz_hubs += i - last_fp;
+        assert(ct->nslice_hubs < 4 * omp_get_max_threads());
+        printf("%d hub slice\n", ct->hub_slices[ct->nslice_hubs - 1]);
+      }
+      last_fp = i;
+    }
+  }
+  if(ct->nnz - last_fp >= 0.5*ct->nnz/omp_get_max_threads()) {
+    ct->hub_slices[ct->nslice_hubs++] = tt->ind[ct->dim_perm[0]][ct->nnz - 1];
+    nnz_hubs += ct->nnz - last_fp;
+    printf("%d hub slice\n", ct->hub_slices[ct->nslice_hubs - 1]);
+  }
+  printf("nslice_hubs = %d nnz_hubs = %ld\n", ct->nslice_hubs, nnz_hubs);
+#endif
+
+  if(ct->nslice_hubs > 0) {
+    fidx_t **new_ind = splatt_malloc(nmodes*sizeof(fidx_t *));
+    for(idx_t i=0; i < nmodes; ++i) {
+#ifdef HBW_ALLOC
+      hbw_posix_memalign((void **)&new_ind[i], 4096, tt->nnz*sizeof(fidx_t));
+#else
+      new_ind[i] = splatt_malloc(tt->nnz*sizeof(fidx_t));
+#endif
+    }
+    storage_val_t *new_vals;
+#ifdef HBW_ALLOC
+    hbw_posix_memalign((void **)&new_vals, 4096, tt->nnz*sizeof(new_vals[0]));
+#else
+    new_vals = splatt_malloc(tt->nnz*sizeof(new_vals[0]));
+#endif
+
+    idx_t non_hub_idx = 0, hub_idx = tt->nnz - nnz_hubs;
+
+    int hub_slice_idx = 0;
+    for (idx_t i=0; i < ct->nnz; ++i) {
+      while(ct->hub_slices[hub_slice_idx] < tt->ind[ct->dim_perm[0]][i] && hub_slice_idx < ct->nslice_hubs) {
+        ++hub_slice_idx;
+      }
+
+      if(ct->hub_slices[hub_slice_idx] == tt->ind[ct->dim_perm[0]][i]) {
+        if(hub_idx >= tt->nnz) {
+          printf("i=%ld hub_slice_idx=%d\n", i, hub_slice_idx);
+        }
+        assert(hub_idx < tt->nnz);
+        for(int m=0; m < nmodes; ++m) {
+          new_ind[m][hub_idx] = tt->ind[m][i];
+        }
+        new_vals[hub_idx] = tt->vals[i];
+        ++hub_idx;
+      }
+      else {
+        assert(non_hub_idx < tt->nnz - nnz_hubs);
+        for(int m=0; m < nmodes; ++m) {
+          new_ind[m][non_hub_idx] = tt->ind[m][i];
+        }
+        new_vals[non_hub_idx] = tt->vals[i];
+        ++non_hub_idx;
+      }
+    }
+    assert(non_hub_idx == tt->nnz - nnz_hubs);
+    assert(hub_idx == tt->nnz);
+
+    for(int m=0; m < nmodes; ++m) {
+#ifdef HBW_ALLOC
+      hbw_free(tt->ind[m]);
+#else
+      splatt_free(tt->ind[m]);
+#endif
+      tt->ind[m] = new_ind[m];
+    }
+    splatt_free(new_ind);
+
+#ifdef HBW_ALLOC
+    hbw_free(tt->vals);
+#else
+    splatt_free(tt->vals);
+#endif
+    tt->vals = new_vals;
+  }
+  else {
+    ct->hub_slices = NULL;
+    ct->nslice_hubs = 0;
+  }
+
   /* last row of fptr is just nonzero inds */
   pt->nfibs[nmodes-1] = ct->nnz;
 #ifdef HBW_ALLOC
@@ -908,7 +1106,7 @@ static void p_csf_alloc_untiled(
   pt->vals           = splatt_malloc(ct->nnz * sizeof(*(pt->vals)));
 #endif
 #pragma omp parallel for
-  for (idx_t i = 0; i < ct->nnz; ++i) {
+  for (idx_t i=0; i < ct->nnz; ++i) {
     pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][i];
   }
 #pragma omp parallel for
@@ -961,6 +1159,8 @@ static void p_csf_alloc_densetile(
 
   ct->ntiles = ntiles;
   ct->pt = splatt_malloc(ntiles * sizeof(*(ct->pt)));
+  ct->hub_slices = NULL;
+  ct->nslice_hubs = 0;
 
   fidx_t *fids_buf = NULL;
   val_t *vals_buf = NULL;
@@ -1176,6 +1376,7 @@ void csf_free_mode(
     free(csf->pt[0].fptr[m]);
     free(csf->pt[0].fids[m]);
   }
+  splatt_free(csf->hub_slices);
   free(csf->pt);
 }
 
@@ -1192,8 +1393,13 @@ void csf_find_mode_order(
 {
   switch(which) {
   case CSF_SORTED_SMALLFIRST:
-    //p_order_dims_small(dims, nmodes, perm_dims);
-    p_order_dims_small_no_privatization(dims, nmodes, perm_dims, nnz, opts);
+    if(nmodes >= 6) {
+      // FIXME: temporaily using this for outpatient6
+      p_order_dims_small(dims, nmodes, perm_dims);
+    }
+    else {
+      p_order_dims_small_no_privatization(dims, nmodes, perm_dims, nnz, opts);
+    }
     break;
 
   case CSF_SORTED_BIGFIRST:
