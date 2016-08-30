@@ -15,7 +15,7 @@
 #include <omp.h>
 
 #ifdef __AVX512F__
-//#define HBW_ALLOC
+#define HBW_ALLOC
   /* define this and run with "numactl -m 0" and MEMKIND_HBW_NODES=1
    * to allocate factor matrices to MCDRAM
    * Should be used together with HBW_ALLOC in matrix.c  */
@@ -24,6 +24,9 @@
 #include <hbwmalloc.h>
 #endif
 
+#ifndef __AVX512F__
+#define SPLATT_USE_DSYRK
+#endif
 
 /******************************************************************************
  * API FUNCTIONS
@@ -360,14 +363,14 @@ double cpd_als_iterate(
       mttkrp_csf(tensors, mats, m, thds, opts);
       timer_stop(&timers[TIMER_MTTKRP]);
 
-#ifdef __AVX512F__
+#ifdef SPLATT_USE_DSYRK
+      par_memcpy(mats[m]->vals, m1->vals, m1->I * nfactors * sizeof(val_t));
+      mat_solve_normals(m, nmodes, aTa, mats[m], 0.);
+#else
       calc_gram_inv(m, nmodes, aTa);
 
       /* A = M1 * M2 */
       mat_matmul(m1, aTa[MAX_NMODES], mats[m]);
-#else
-      par_memcpy(mats[m]->vals, m1->vals, m1->I * nfactors * sizeof(val_t));
-      mat_solve_normals(m, nmodes, aTa, mats[m], 0.);
 #endif
 
       /* normalize columns and extract lambda */

@@ -15,12 +15,16 @@
 #include <omp.h>
 
 #ifdef __AVX512F__
-//#define HBW_ALLOC
+#define HBW_ALLOC
   /* define this and run with "numactl -m 0" and MEMKIND_HBW_NODES=1
    * to allocate factor matrices to MCDRAM */
 #endif
 #ifdef HBW_ALLOC
 #include <hbwmalloc.h>
+#endif
+
+#ifndef __AVX512F__
+#define SPLATT_USE_DSYRK
 #endif
 
 /******************************************************************************
@@ -464,9 +468,7 @@ void mat_aTa(
   timer_start(&timers[TIMER_ATA]);
 #define SPLATT_USE_MKL
 #ifdef SPLATT_USE_MKL
-#ifdef __AVX512F__
-  cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, A->J, A->J, A->I, 1, A->vals, A->J, A->vals, A->J, 0, ret->vals, ret->J);
-#else
+#ifdef SPLATT_USE_DSYRK
   char uplo = 'L';
   char trans = 'N';
   int N = A->J;
@@ -476,6 +478,8 @@ void mat_aTa(
   val_t alpha = 1.;
   val_t beta = 0.;
   dsyrk(&uplo, &trans, &N, &K, &alpha, A->vals, &lda, &beta, ret->vals, &ldc);
+#else
+  cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, A->J, A->J, A->I, 1, A->vals, A->J, A->vals, A->J, 0, ret->vals, ret->J);
 #endif
 #else
   /* check matrix dimensions */
