@@ -104,6 +104,9 @@ for i in "${@}"; do
     --dev)
     CONFIG_FLAGS="${CONFIG_FLAGS} -DDEV_MODE=1"
     ;;
+    --knl)
+    CONFIG_FLAGS="${CONFIG_FLAGS} -DKNL=1"
+    ;;
     # bad argument
     *)
     die "Unknown option '${i}'"
