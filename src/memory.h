@@ -1,10 +1,12 @@
 #ifndef SPLATT_MEMORY_H
 #define SPLATT_MEMORY_H
 
+
 #ifndef SPLATT_MEM_ALIGNMENT
 #define SPLATT_MEM_ALIGNMENT 4096
 #endif
 
+#include <stdlib.h>
 
 #ifdef __cplusplus
 extern "C" {

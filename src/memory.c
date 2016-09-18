@@ -1,6 +1,9 @@
 
 #include "memory.h"
 
+#include <stdio.h>
+#include <assert.h>
+
 #ifdef HBW_ALLOC
 #include <hbwmalloc.h>
 #endif

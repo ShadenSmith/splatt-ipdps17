@@ -273,7 +273,7 @@ sptensor_t * tt_alloc(
   tt->nmodes = nmodes;
   tt->type = (nmodes == 3) ? SPLATT_3MODE : SPLATT_NMODE;
 
-  tt->dims = splatt_malloc(nmodes * sizeof(*dims));
+  tt->dims = splatt_malloc(nmodes * sizeof(*tt->dims));
   tt->ind = splatt_malloc(nmodes * sizeof(**tt->ind));
 #ifdef HBW_ALLOC
   for(idx_t m=0; m < nmodes; ++m) {
