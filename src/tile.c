@@ -10,11 +10,6 @@
 
 #include <omp.h>
 
-#ifdef __AVX512F__
-//#define HBW_ALLOC
-  /* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
-   * to allocate non-performance critical performance data to DDR */
-#endif
 
 /******************************************************************************
  * PRIVATE FUNCTIONS
@@ -295,7 +290,7 @@ idx_t * tt_densetile(
   int nthreads = SS_MAX(SS_MIN((1L << 36)/(ntiles*sizeof(idx_t)), omp_get_max_threads()), 1);
 
   sptensor_t * newtt = NULL;
-#ifdef HBW_ALLOC
+#if SPLATT_NONPERFORM_HBW
   idx_t * tcounts = splatt_hbw_malloc((nthreads*ntiles+1)*sizeof(*tcounts));
 #else
   idx_t * tcounts = splatt_malloc((nthreads*ntiles+1)*sizeof(*tcounts));
@@ -392,7 +387,7 @@ idx_t * tt_densetile(
 
   idx_t * real_tcounts = splatt_malloc((ntiles + 1)*sizeof(*real_tcounts));
   par_memcpy(real_tcounts, tcounts, (ntiles + 1)*sizeof(*real_tcounts));
-#ifdef HBW_ALLOC
+#if SPLATT_NONPERFORM_HBW
   splatt_hbw_free(tcounts);
 #else
   splatt_free(tcounts);

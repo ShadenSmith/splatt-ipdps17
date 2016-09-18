@@ -14,12 +14,6 @@
 
 #include <omp.h>
 
-#ifdef __AVX512F__
-//#define HBW_ALLOC
-  /* define this and run with "numalloc -m 1" and MEMKIND_HBW_NODES=0
-   * to allocate non-performance critical performance data to DDR */
-#endif
-
 
 /******************************************************************************
  * FILE TYPES
@@ -217,7 +211,7 @@ static sptensor_t * p_tt_read_binary_file(
   /* fill in tensor data */
   for(idx_t m=0; m < nmodes; ++m) {
     double t = omp_get_wtime();
-#ifdef HBW_ALLOC
+#if SPLATT_NONPERFORM_HBW
     tt->ind[m] = splatt_hbw_malloc(nnz * sizeof(tt->ind[m][0]));
 #else
     tt->ind[m] = splatt_malloc(nnz * sizeof(tt->ind[m][0]));
@@ -227,7 +221,7 @@ static sptensor_t * p_tt_read_binary_file(
   }
 
   double t = omp_get_wtime();
-#ifdef HBW_ALLOC
+#if SPLATT_NONPERFORM_HBW
   tt->vals = splatt_hbw_malloc(nnz * sizeof(tt->vals[0]));
 #else
   tt->vals = splatt_malloc(nnz * sizeof(tt->vals[0]));

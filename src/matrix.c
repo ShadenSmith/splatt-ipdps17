@@ -14,12 +14,6 @@
 #include <math.h>
 #include <omp.h>
 
-#ifdef __AVX512F__
-#define HBW_ALLOC
-  /* define this and run with "numactl -m 0" and MEMKIND_HBW_NODES=1
-   * to allocate factor matrices to MCDRAM */
-#endif
-
 #ifndef __AVX512F__
 #define SPLATT_USE_DSYRK
 #endif
@@ -765,7 +759,7 @@ matrix_t * mat_alloc(
   matrix_t * mat = (matrix_t *) splatt_malloc(sizeof(matrix_t));
   mat->I = nrows;
   mat->J = ncols;
-#ifdef HBW_ALLOC
+#if SPLATT_MAT_HBW
   mat->vals = splatt_hbw_malloc(nrows * ncols * sizeof(*mat->vals));
 #else
   mat->vals = splatt_malloc(nrows * ncols * sizeof(*mat->vals));
@@ -789,7 +783,7 @@ matrix_t * mat_rand(
 void mat_free(
   matrix_t * mat)
 {
-#ifdef HBW_ALLOC
+#if SPLATT_MAT_HBW
   splatt_hbw_free(mat->vals);
 #else
   free(mat->vals);

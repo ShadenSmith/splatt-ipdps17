@@ -11,12 +11,6 @@
 
 #include <math.h>
 
-#ifdef __AVX512F__
-//#define HBW_ALLOC
-  /* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
-   * to allocate sptensor data to DDR */
-#endif
-
 /******************************************************************************
  * PRIVATE FUNCTONS
  *****************************************************************************/
@@ -231,7 +225,7 @@ idx_t tt_remove_empty(
     }
   }
 
-  free(scounts);
+  splatt_free(scounts);
   return nremoved;
 }
 
@@ -264,7 +258,7 @@ sptensor_t * tt_alloc(
   tt->tiled = SPLATT_NOTILE;
 
   tt->nnz = nnz;
-#ifdef HBW_ALLOC
+#if SPLATT_SPTENSOR_HBW
   tt->vals = splatt_hbw_malloc(nnz * sizeof(*tt->vals));
 #else
   tt->vals = splatt_malloc(nnz * sizeof(*tt->vals));
@@ -275,7 +269,7 @@ sptensor_t * tt_alloc(
 
   tt->dims = splatt_malloc(nmodes * sizeof(*tt->dims));
   tt->ind = splatt_malloc(nmodes * sizeof(**tt->ind));
-#ifdef HBW_ALLOC
+#if SPLATT_SPTENSOR_HBW
   for(idx_t m=0; m < nmodes; ++m) {
     tt->ind[m] = splatt_hbw_malloc(nnz * sizeof(**tt->ind));
     tt->indmap[m] = NULL;
@@ -324,20 +318,20 @@ void tt_free(
 {
   tt->nnz = 0;
   for(idx_t m=0; m < tt->nmodes; ++m) {
-#ifdef HBW_ALLOC
-    hbw_free(tt->ind[m]);
+#if SPLATT_SPTENSOR_HBW
+    splatt_hbw_free(tt->ind[m]);
 #else
-    free(tt->ind[m]);
+    splatt_free(tt->ind[m]);
 #endif
-    free(tt->indmap[m]);
+    splatt_free(tt->indmap[m]);
   }
   tt->nmodes = 0;
-  free(tt->dims);
-  free(tt->ind);
-#ifdef HBW_ALLOC
-  hbw_free(tt->vals);
+  splatt_free(tt->dims);
+  splatt_free(tt->ind);
+#if SPLATT_SPTENSOR_HBW
+  splatt_hbw_free(tt->vals);
 #else
-  free(tt->vals);
+  splatt_free(tt->vals);
 #endif
   free(tt);
 }

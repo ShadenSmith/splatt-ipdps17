@@ -2,11 +2,46 @@
 #define SPLATT_MEMORY_H
 
 
+#include <stdlib.h>
+
+
 #ifndef SPLATT_MEM_ALIGNMENT
 #define SPLATT_MEM_ALIGNMENT 4096
 #endif
 
-#include <stdlib.h>
+
+
+
+/*
+ * Which components are allocated in HBW?
+ */
+
+/* define this and run with "numactl -m 0" and MEMKIND_HBW_NODES=1
+ * to allocate factor matrices to MCDRAM */
+#ifndef SPLATT_MAT_HBW
+#define SPLATT_MAT_HBW 1
+#endif
+
+
+/* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
+ * to allocate tensor data to DDR */
+#ifndef SPLATT_CSF_HBW
+#define SPLATT_CSF_HBW 0
+#endif
+
+
+/* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
+ * to allocate tensor data to DDR */
+#ifndef SPLATT_NONPERFORM_HBW
+#define SPLATT_NONPERFORM_HBW 0
+#endif
+
+/* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
+ * to allocate sptensor data to DDR */
+#ifndef SPLATT_SPTENSOR_HBW
+#define SPLATT_SPTENSOR_HBW 0
+#endif
+
 
 #ifdef __cplusplus
 extern "C" {
