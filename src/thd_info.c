@@ -171,8 +171,8 @@ thd_info * thd_init(
   for(idx_t s=0; s < nscratch; ++s) {
     idx_t const bytes = va_arg(args, idx_t);
     for(idx_t t=0; t < nthreads; ++t) {
-      thds[t].scratch[s] = (void *) splatt_malloc(bytes);
-      par_memset(thds[t].scratch[s], 0, bytes);
+      thds[t].scratch[s] = (void *) splatt_hbw_malloc(bytes);
+      memset(thds[t].scratch[s], 0, bytes);
     }
   }
   va_end(args);
@@ -204,10 +204,10 @@ void thd_free(
 {
   for(idx_t t=0; t < nthreads; ++t) {
     for(idx_t s=0; s < thds[t].nscratch; ++s) {
-      free(thds[t].scratch[s]);
+      splatt_hbw_free(thds[t].scratch[s]);
     }
-    free(thds[t].scratch);
+    splatt_free(thds[t].scratch);
   }
-  free(thds);
+  splatt_free(thds);
 }
 

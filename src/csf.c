@@ -66,10 +66,125 @@ void splatt_free_csf(
 
 
 
+/******************************************************************************
+ * MEMORY ALLOCATION FUNCTIONS
+ *****************************************************************************/
+
+/**
+* @brief Allocate an fptr array, respecting data size and HBW allocation.
+*
+* @param n_elems The size of the fptr array, in # elements.
+*
+* @return A (void *) pointer to the array.
+*/
+void * p_alloc_fptr(
+    idx_t n_elems)
+{
+  /* This lets us auto-size based on struct definition. */
+  csf_sparsity sparsity;
+
+#if SPLATT_CSF_FPTR_HBW
+  return splatt_hbw_malloc(n_elems * sizeof(**sparsity.fptr));
+#else
+  return splatt_malloc(n_elems * sizeof(**sparsity.fptr));
+#endif
+}
+
+
+/**
+* @brief Free an fptr array allocated by p_alloc_fptr().
+*
+* @param fptr The array to free.
+*/
+void p_free_fptr(
+    void * fptr)
+{
+#if SPLATT_CSF_FPTR_HBW
+  splatt_hbw_free(fptr);
+#else
+  splatt_free(fptr);
+#endif
+}
+
+
+/**
+* @brief Allocate an fids array, respecting data size and HBW allocation.
+*
+* @param n_elems The size of the fids array, in # elements.
+*
+* @return A (void *) pointer to the array.
+*/
+void * p_alloc_fids(
+    idx_t n_elems)
+{
+  /* This lets us auto-size based on struct definition. */
+  csf_sparsity sparsity;
+
+#if SPLATT_CSF_FIDS_HBW
+  return splatt_hbw_malloc(n_elems * sizeof(**sparsity.fids));
+#else
+  return splatt_malloc(n_elems * sizeof(**sparsity.fids));
+#endif
+}
+
+
+/**
+* @brief Free an fids array allocated by p_alloc_fids().
+*
+* @param fids The array to free.
+*/
+void p_free_fids(
+    void * fids)
+{
+#if SPLATT_CSF_FIDS_HBW
+  splatt_hbw_free(fids);
+#else
+  splatt_free(fids);
+#endif
+}
+
+
+/**
+* @brief Allocate a vals array, respecting data size and HBW allocation.
+*
+* @param n_elems The size of th vals array, in # elements.
+*
+* @return A (void *) pointer to the array.
+*/
+void * p_alloc_vals(
+    idx_t n_elems)
+{
+  /* This lets us auto-size based on struct definition. */
+  csf_sparsity sparsity;
+
+#if SPLATT_CSF_VALS_HBW
+  return splatt_hbw_malloc(n_elems * sizeof(*sparsity.vals));
+#else
+  return splatt_malloc(n_elems * sizeof(*sparsity.vals));
+#endif
+}
+
+
+/**
+* @brief Free a vals array allocated by p_alloc_vals().
+*
+* @param vals The array to free.
+*/
+void p_free_vals(
+    void * vals)
+{
+#if SPLATT_CSF_VALS_HBW
+  splatt_hbw_free(vals);
+#else
+  splatt_free(vals);
+#endif
+}
+
 
 /******************************************************************************
  * PRIVATE FUNCTIONS
  *****************************************************************************/
+
 
 /**
 * @brief Find a permutation of modes that results in non-increasing mode size.
@@ -295,9 +410,9 @@ splatt_csf_write_file(
     fwrite(ft->nfibs, sizeof(*ft->nfibs), ct->nmodes, fout);
 
     for(idx_t m=0; m < ct->nmodes-1; ++m) {
-      fwrite(ft->fptr[m], sizeof(*ft->fptr[m]), ft->nfibs[m] + 1, fout);
+      fwrite(ft->fptr[m], sizeof(**ft->fptr), ft->nfibs[m] + 1, fout);
       if (m != 0) { // FIXME
-        fwrite(ft->fids[m], sizeof(*ft->fids[m]), ft->nfibs[m], fout);
+        fwrite(ft->fids[m], sizeof(**ft->fids), ft->nfibs[m], fout);
       }
     }
 
@@ -348,10 +463,10 @@ void splatt_csf_read_file(
     fread(ft->nfibs, sizeof(*ft->nfibs), ct->nmodes, fin);
 
     for(idx_t m=0; m < ct->nmodes-1; ++m) {
-      ft->fptr[m] = splatt_malloc((ft->nfibs[m]+1) * sizeof(**(ft->fptr)));
+      ft->fptr[m] = p_alloc_fptr(ft->nfibs[m] + 1);
       fread(ft->fptr[m], sizeof(*ft->fptr[m]), ft->nfibs[m]+1, fin);
       if (m != 0) { // FIXME
-        ft->fids[m] = splatt_malloc(ft->nfibs[m] * sizeof(**(ft->fids)));
+        ft->fids[m] = p_alloc_fids(ft->nfibs[m]);
         fread(ft->fids[m], sizeof(*ft->fids[m]), ft->nfibs[m], fin);
       }
       else {
@@ -359,13 +474,8 @@ void splatt_csf_read_file(
       }
     }
 
-#if SPLATT_CSF_HBW
-    ft->fids[ct->nmodes-1] = splatt_hbw_malloc(ft->nfibs[ct->nmodes-1] * sizeof(**(ft->fids)));
-    ft->vals               = splatt_hbw_malloc(ft->nfibs[ct->nmodes-1] * sizeof(*(ft->vals)));
-#else
-    ft->fids[ct->nmodes-1] = splatt_malloc(ft->nfibs[ct->nmodes-1] * sizeof(**(ft->fids)));
-    ft->vals               = splatt_malloc(ft->nfibs[ct->nmodes-1] * sizeof(*(ft->vals)));
-#endif
+    ft->fids[ct->nmodes-1] = p_alloc_fids(ft->nfibs[ct->nmodes-1]);
+    ft->vals               = p_alloc_vals(ft->nfibs[ct->nmodes-1]);
 
     fread(ft->fids[ct->nmodes-1], sizeof(*ft->fids[ct->nmodes-1]), ft->nfibs[ct->nmodes-1], fin);
     fread(ft->vals, sizeof(*ft->vals), ft->nfibs[ct->nmodes-1], fin);
@@ -598,9 +708,9 @@ static void p_mk_outerptr_hub(
       ct->pt[tile_id].nfibs[0] = nfibs[nthreads];
       assert(nfibs[nthreads] <= ct->dims[ct->dim_perm[0]]);
 
-      pt->fptr[0] = splatt_malloc((nfibs[nthreads]+1) * sizeof(**(pt->fptr)));
+      pt->fptr[0] = p_alloc_fptr(nfibs[nthreads] + 1);
       if(ct->ntiles > 1) {
-        pt->fids[0] = splatt_malloc(nfibs[nthreads] * sizeof(**(pt->fids)));
+        pt->fids[0] = p_alloc_fids(nfibs[nthreads]);
       } else {
         pt->fids[0] = NULL;
       }
@@ -701,7 +811,7 @@ static void p_mk_outerptr(
     fp[nfibs] = nnz;
   } /* omp_in_parallel */
   else {
-    idx_t *nfibs = malloc(sizeof(idx_t)*(omp_get_max_threads() + 1));
+    idx_t *nfibs = malloc(sizeof(*nfibs)*(omp_get_max_threads() + 1));
     nfibs[0] = 1;
 
 #pragma omp parallel
@@ -733,9 +843,9 @@ static void p_mk_outerptr(
         ct->pt[tile_id].nfibs[0] = nfibs[nthreads];
         assert(nfibs[nthreads] <= ct->dims[ct->dim_perm[0]]);
 
-        pt->fptr[0] = splatt_malloc((nfibs[nthreads]+1) * sizeof(**(pt->fptr)));
+        pt->fptr[0] = p_alloc_fptr(nfibs[nthreads] + 1);
         if(ct->ntiles > 1 || ct->nslice_hubs > 0) {
-          pt->fids[0] = splatt_malloc(nfibs[nthreads] * sizeof(**(pt->fids)));
+          pt->fids[0] = p_alloc_fids(nfibs[nthreads]);
         } else {
           pt->fids[0] = NULL;
         }
@@ -928,8 +1038,8 @@ static void p_mk_fptr(
         }
         pt->nfibs[mode] = nfibs[nthreads];
 
-        pt->fptr[mode] = splatt_malloc((nfibs[nthreads]+1) * sizeof(**(pt->fptr)));
-        pt->fids[mode] = splatt_malloc(nfibs[nthreads] * sizeof(**(pt->fids)));
+        pt->fptr[mode] = p_alloc_fptr(nfibs[nthreads] + 1);
+        pt->fids[mode] = p_alloc_fids(nfibs[nthreads]);
       }
 #pragma omp barrier
 
@@ -1019,19 +1129,18 @@ static void p_csf_alloc_untiled(
 #endif
 
   if(ct->nslice_hubs > 0) {
-    fidx_t **new_ind = splatt_malloc(nmodes*sizeof(fidx_t *));
+    fidx_t ** new_ind = splatt_malloc(nmodes*sizeof(*new_ind));
     for(idx_t i=0; i < nmodes; ++i) {
-#if SPLATT_CSF_HBW
-      new_ind[i] = splatt_hbw_malloc(tt->nnz*sizeof(fidx_t));
+#if SPLATT_SPTENSOR_HBW
+      new_ind[i] = splatt_hbw_malloc(tt->nnz * sizeof(**new_ind));
 #else
-      new_ind[i] = splatt_malloc(tt->nnz*sizeof(fidx_t));
+      new_ind[i] = splatt_malloc(tt->nnz * sizeof(**new_ind));
 #endif
     }
-    storage_val_t *new_vals;
-#if SPLATT_CSF_HBW
-    new_vals = splatt_hbw_malloc(tt->nnz*sizeof(new_vals[0]));
+#if SPLATT_SPTENSOR_HBW
+    storage_val_t * new_vals = splatt_hbw_malloc(tt->nnz * sizeof(*new_vals));
 #else
-    new_vals = splatt_malloc(tt->nnz*sizeof(new_vals[0]));
+    storage_val_t * new_vals = splatt_malloc(tt->nnz * sizeof(*new_vals));
 #endif
 
     idx_t non_hub_idx = 0, hub_idx = tt->nnz - nnz_hubs;
@@ -1066,7 +1175,7 @@ static void p_csf_alloc_untiled(
     assert(hub_idx == tt->nnz);
 
     for(int m=0; m < nmodes; ++m) {
-#if SPLATT_CSF_HBW
+#if SPLATT_SPTENSOR_HBW
       splatt_hbw_free(tt->ind[m]);
 #else
       splatt_free(tt->ind[m]);
@@ -1075,7 +1184,7 @@ static void p_csf_alloc_untiled(
     }
     splatt_free(new_ind);
 
-#if SPLATT_CSF_HBW
+#if SPLATT_SPTENSOR_HBW
     splatt_hbw_free(tt->vals);
 #else
     splatt_free(tt->vals);
@@ -1089,13 +1198,9 @@ static void p_csf_alloc_untiled(
 
   /* last row of fptr is just nonzero inds */
   pt->nfibs[nmodes-1] = ct->nnz;
-#if SPLATT_CSF_HBW
-  pt->fids[nmodes-1] = splatt_hbw_malloc(ct->nnz * sizeof(**(pt->fids)));
-  pt->vals           = splatt_hbw_malloc(ct->nnz * sizeof(*(pt->vals)));
-#else
-  pt->fids[nmodes-1] = splatt_malloc(ct->nnz * sizeof(**(pt->fids)));
-  pt->vals           = splatt_malloc(ct->nnz * sizeof(*(pt->vals)));
-#endif
+  pt->fids[nmodes-1] = p_alloc_fids(ct->nnz);
+  pt->vals           = p_alloc_vals(ct->nnz);
+
 #pragma omp parallel for
   for (idx_t i=0; i < ct->nnz; ++i) {
     pt->fids[nmodes-1][i] = tt->ind[ct->dim_perm[nmodes-1]][i];
@@ -1153,16 +1258,11 @@ static void p_csf_alloc_densetile(
   ct->hub_slices = NULL;
   ct->nslice_hubs = 0;
 
-  fidx_t *fids_buf = NULL;
-  val_t *vals_buf = NULL;
+  fidx_t * fids_buf = NULL;
+  val_t * vals_buf = NULL;
 
-#if SPLATT_CSF_HBW
-  fids_buf = splatt_hbw_malloc(ct->nnz * sizeof(**(ct->pt[0].fids)));
-  vals_buf = splatt_hbw_malloc(ct->nnz * sizeof(*(ct->pt[0].vals)));
-#else
-  fids_buf = splatt_malloc(ct->nnz * sizeof(**(ct->pt[0].fids)));
-  vals_buf = splatt_malloc(ct->nnz * sizeof(*(ct->pt[0].vals)));
-#endif
+  fids_buf = p_alloc_fids(ct->nnz);
+  vals_buf = p_alloc_vals(ct->nnz);
 
   for(idx_t m=0; m < nmodes-1; ++m) {
 #pragma omp parallel for if (ntiles > 1) schedule(dynamic, 1)
@@ -1184,7 +1284,7 @@ static void p_csf_alloc_densetile(
           }
           /* first fptr may be accessed anyway */
           if(!omp_in_parallel()) {
-            pt->fptr[0] = (idx_t *) splatt_malloc(2 * sizeof(**(pt->fptr)));
+            pt->fptr[0] = p_alloc_fptr(2);
             pt->fptr[0][0] = 0;
             pt->fptr[0][1] = 0;
           }
@@ -1241,8 +1341,8 @@ static void p_csf_alloc_densetile(
         else nfibs_acc += ct->pt[t].nfibs[m];
       }
 
-      ct->pt[0].fptr[m] = splatt_malloc((nfibs_acc + ntiles + nempty) * sizeof(**(ct->pt->fptr)));
-      ct->pt[0].fids[m] = splatt_malloc(nfibs_acc * sizeof(**(ct->pt->fids)));
+      ct->pt[0].fptr[m] = p_alloc_fptr(nfibs_acc + ntiles + nempty);
+      ct->pt[0].fids[m] = p_alloc_fids(nfibs_acc);
 
       nfibs_acc = 0;
       nempty = 0;
@@ -1348,19 +1448,17 @@ void csf_free_mode(
     splatt_csf * const csf)
 {
   /* free each tile of sparsity pattern */
-#if SPLATT_CSF_HBW
-  splatt_hbw_free(csf->pt[0].vals);
-  splatt_hbw_free(csf->pt[0].fids[csf->nmodes-1]);
-#else
-  free(csf->pt[0].vals);
-  free(csf->pt[0].fids[csf->nmodes-1]);
-#endif
-  for(idx_t m=0; m < csf->nmodes-1; ++m) {
-    free(csf->pt[0].fptr[m]);
-    free(csf->pt[0].fids[m]);
+  for(idx_t t=0; t < csf->ntiles; ++t) {
+    p_free_vals(csf->pt[t].vals);
+    p_free_fids(csf->pt[t].fids[csf->nmodes-1]);
+
+    for(idx_t m=0; m < csf->nmodes-1; ++m) {
+      p_free_fptr(csf->pt[t].fptr[m]);
+      p_free_fids(csf->pt[t].fids[m]);
+    }
   }
   splatt_free(csf->hub_slices);
-  free(csf->pt);
+  splatt_free(csf->pt);
 }
 
 

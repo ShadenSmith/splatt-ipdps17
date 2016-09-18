@@ -223,9 +223,17 @@ void splatt_cpd_cmd(
     cpd_stats(csf, args.nfactors, args.opts);
   }
 
-  splatt_kruskal factored;
+  /* print HBW info */
+  printf("SPLATT_HBW_ALLOC=%d\n", SPLATT_HBW_ALLOC);
+  printf("SPLATT_MAT_HBW=%d\n", SPLATT_MAT_HBW);
+  printf("SPLATT_CSF_FPTR_HBW=%d\n", SPLATT_CSF_FPTR_HBW);
+  printf("SPLATT_CSF_FIDS_HBW=%d\n", SPLATT_CSF_FIDS_HBW);
+  printf("SPLATT_CSF_VALS_HBW=%d\n", SPLATT_CSF_VALS_HBW);
+  printf("SPLATT_NONPERFORM_HBW=%d\n", SPLATT_NONPERFORM_HBW);
+
 
   /* do the factorization! */
+  splatt_kruskal factored;
   int ret = splatt_cpd_als(csf, args.nfactors, args.opts, &factored);
   if(ret != SPLATT_SUCCESS) {
     fprintf(stderr, "splatt_cpd_als returned %d. Aborting.\n", ret);

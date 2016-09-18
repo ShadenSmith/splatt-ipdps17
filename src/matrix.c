@@ -786,10 +786,11 @@ void mat_free(
 #if SPLATT_MAT_HBW
   splatt_hbw_free(mat->vals);
 #else
-  free(mat->vals);
+  splatt_free(mat->vals);
 #endif
-  free(mat);
+  splatt_free(mat);
 }
+
 
 matrix_t * mat_mkrow(
   matrix_t const * const mat)

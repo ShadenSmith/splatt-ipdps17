@@ -4,7 +4,8 @@
 #include <stdio.h>
 #include <assert.h>
 
-#ifdef HBW_ALLOC
+
+#if SPLATT_HBW_ALLOC
 #include <hbwmalloc.h>
 #endif
 
@@ -36,7 +37,7 @@ void splatt_free(
 void * splatt_hbw_malloc(
     size_t const bytes)
 {
-#ifdef HBW_ALLOC
+#if SPLATT_HBW_ALLOC
   void * ptr = NULL;
   int ret = hbw_posix_memalign(&ptr, SPLATT_MEM_ALIGNMENT, bytes);
 
@@ -59,7 +60,7 @@ void * splatt_hbw_malloc(
 void splatt_hbw_free(
     void * ptr)
 {
-#ifdef HBW_ALLOC
+#if SPLATT_HBW_ALLOC
   hbw_free(ptr);
 #else
   splatt_free(ptr);
