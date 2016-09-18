@@ -230,6 +230,7 @@ void splatt_cpd_cmd(
   printf("SPLATT_CSF_FIDS_HBW=%d\n", SPLATT_CSF_FIDS_HBW);
   printf("SPLATT_CSF_VALS_HBW=%d\n", SPLATT_CSF_VALS_HBW);
   printf("SPLATT_NONPERFORM_HBW=%d\n", SPLATT_NONPERFORM_HBW);
+  printf("\n");
 
 
   /* do the factorization! */
