@@ -19,9 +19,6 @@
   /* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
    * to allocate tensor data to DDR */
 #endif
-#ifdef HBW_ALLOC
-#include <hbwmalloc.h>
-#endif
 
 /******************************************************************************
  * API FUNCTIONS
@@ -369,8 +366,8 @@ void splatt_csf_read_file(
     }
 
 #ifdef HBW_ALLOC
-    hbw_posix_memalign((void **)&ft->fids[ct->nmodes-1], 4096, ft->nfibs[ct->nmodes-1] * sizeof(**(ft->fids)));
-    hbw_posix_memalign((void **)&ft->vals, 4096, ft->nfibs[ct->nmodes-1] * sizeof(*(ft->vals)));
+    ft->fids[ct->nmodes-1] = splatt_hbw_malloc(ft->nfibs[ct->nmodes-1] * sizeof(**(ft->fids)));
+    ft->vals               = splatt_hbw_malloc(ft->nfibs[ct->nmodes-1] * sizeof(*(ft->vals)));
 #else
     ft->fids[ct->nmodes-1] = splatt_malloc(ft->nfibs[ct->nmodes-1] * sizeof(**(ft->fids)));
     ft->vals               = splatt_malloc(ft->nfibs[ct->nmodes-1] * sizeof(*(ft->vals)));
@@ -1031,14 +1028,14 @@ static void p_csf_alloc_untiled(
     fidx_t **new_ind = splatt_malloc(nmodes*sizeof(fidx_t *));
     for(idx_t i=0; i < nmodes; ++i) {
 #ifdef HBW_ALLOC
-      hbw_posix_memalign((void **)&new_ind[i], 4096, tt->nnz*sizeof(fidx_t));
+      new_ind[i] = splatt_hbw_malloc(tt->nnz*sizeof(fidx_t));
 #else
       new_ind[i] = splatt_malloc(tt->nnz*sizeof(fidx_t));
 #endif
     }
     storage_val_t *new_vals;
 #ifdef HBW_ALLOC
-    hbw_posix_memalign((void **)&new_vals, 4096, tt->nnz*sizeof(new_vals[0]));
+    new_vals = splatt_hbw_malloc(tt->nnz*sizeof(new_vals[0]));
 #else
     new_vals = splatt_malloc(tt->nnz*sizeof(new_vals[0]));
 #endif
@@ -1076,7 +1073,7 @@ static void p_csf_alloc_untiled(
 
     for(int m=0; m < nmodes; ++m) {
 #ifdef HBW_ALLOC
-      hbw_free(tt->ind[m]);
+      splatt_hbw_free(tt->ind[m]);
 #else
       splatt_free(tt->ind[m]);
 #endif
@@ -1085,7 +1082,7 @@ static void p_csf_alloc_untiled(
     splatt_free(new_ind);
 
 #ifdef HBW_ALLOC
-    hbw_free(tt->vals);
+    splatt_hbw_free(tt->vals);
 #else
     splatt_free(tt->vals);
 #endif
@@ -1099,8 +1096,8 @@ static void p_csf_alloc_untiled(
   /* last row of fptr is just nonzero inds */
   pt->nfibs[nmodes-1] = ct->nnz;
 #ifdef HBW_ALLOC
-  hbw_posix_memalign((void **)&pt->fids[nmodes-1], 4096, ct->nnz * sizeof(**(pt->fids)));
-  hbw_posix_memalign((void **)&pt->vals, 4096, ct->nnz * sizeof(*(pt->vals)));
+  pt->fids[nmodes-1] = splatt_hbw_malloc(ct->nnz * sizeof(**(pt->fids)));
+  pt->vals           = splatt_hbw_malloc(ct->nnz * sizeof(*(pt->vals)));
 #else
   pt->fids[nmodes-1] = splatt_malloc(ct->nnz * sizeof(**(pt->fids)));
   pt->vals           = splatt_malloc(ct->nnz * sizeof(*(pt->vals)));
@@ -1166,16 +1163,8 @@ static void p_csf_alloc_densetile(
   val_t *vals_buf = NULL;
 
 #ifdef HBW_ALLOC
-  int ret = hbw_posix_memalign((void **)&fids_buf, 4096, ct->nnz * sizeof(**(ct->pt[0].fids)));
-  if(ret != 0) {
-    fprintf(stderr, "SPLATT: hbw_posix_memalign() returned %d.\n", ret);
-    assert(0);
-  }
-  ret = hbw_posix_memalign((void **)&vals_buf, 4096, ct->nnz * sizeof(*(ct->pt[0].vals)));
-  if(ret != 0) {
-    fprintf(stderr, "SPLATT: hbw_posix_memalign() returned %d.\n", ret);
-    assert(0);
-  }
+  fids_buf = splatt_hbw_malloc(ct->nnz * sizeof(**(ct->pt[0].fids)));
+  vals_buf = splatt_hbw_malloc(ct->nnz * sizeof(*(ct->pt[0].vals)));
 #else
   fids_buf = splatt_malloc(ct->nnz * sizeof(**(ct->pt[0].fids)));
   vals_buf = splatt_malloc(ct->nnz * sizeof(*(ct->pt[0].vals)));
@@ -1366,8 +1355,8 @@ void csf_free_mode(
 {
   /* free each tile of sparsity pattern */
 #ifdef HBW_ALLOC
-  hbw_free(csf->pt[0].vals);
-  hbw_free(csf->pt[0].fids[csf->nmodes-1]);
+  splatt_hbw_free(csf->pt[0].vals);
+  splatt_hbw_free(csf->pt[0].fids[csf->nmodes-1]);
 #else
   free(csf->pt[0].vals);
   free(csf->pt[0].fids[csf->nmodes-1]);

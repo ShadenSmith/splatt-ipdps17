@@ -14,9 +14,6 @@
   /* define this and run with "numalloc -m 1" and MEMKIND_HBW_NODES=0
    * to allocate non-performance critical performance data to DDR */
 #endif
-#ifdef HBW_ALLOC
-#include <hbwmalloc.h>
-#endif
 
 /******************************************************************************
  * DEFINES
@@ -915,20 +912,20 @@ static void p_counting_sort_hybrid3(sptensor_t * const tt, idx_t *cmplt)
   fidx_t **new_ind = splatt_malloc(tt->nmodes*sizeof(fidx_t *));
   for(idx_t i = 0; i < tt->nmodes; ++i) {
 #ifdef HBW_ALLOC
-    if(i != m) hbw_posix_memalign((void **)&new_ind[i], 4096, tt->nnz*sizeof(fidx_t));
+    if(i != m) new_ind[i] = splatt_hbw_malloc(tt->nnz*sizeof(*new_ind));
 #else
-    if(i != m) new_ind[i] = splatt_malloc(tt->nnz*sizeof(fidx_t));
+    if(i != m) new_ind[i] = splatt_malloc(tt->nnz*sizeof(*new_ind));
 #endif
   }
 
   storage_val_t *new_vals;
   idx_t *histogram_array;
 #ifdef HBW_ALLOC
-  hbw_posix_memalign((void **)&new_vals, 4096, tt->nnz*sizeof(new_vals[0]));
-  hbw_posix_memalign((void **)&histogram_array, 4096, (nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
+  new_vals        = splatt_hbw_malloc(tt->nnz*sizeof(*new_vals));
+  histogram_array = splatt_hbw_malloc((nslices*omp_get_max_threads() + 1)*sizeof(*histogram_array));
 #else
-  new_vals = splatt_malloc(tt->nnz*sizeof(new_vals[0]));
-  histogram_array = splatt_malloc((nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
+  new_vals        = splatt_malloc(tt->nnz*sizeof(*new_vals));
+  histogram_array = splatt_malloc((nslices*omp_get_max_threads() + 1)*sizeof(*histogram_array));
 #endif
 
 #pragma omp parallel
@@ -1047,7 +1044,7 @@ static void p_counting_sort_hybrid3(sptensor_t * const tt, idx_t *cmplt)
   for(idx_t i = 0; i < tt->nmodes; ++i) {
     if(i != m) {
 #ifdef HBW_ALLOC
-      hbw_free(tt->ind[i]);
+      splatt_hbw_free(tt->ind[i]);
 #else
       splatt_free(tt->ind[i]);
 #endif
@@ -1056,7 +1053,7 @@ static void p_counting_sort_hybrid3(sptensor_t * const tt, idx_t *cmplt)
   }
   splatt_free(new_ind);
 #ifdef HBW_ALLOC
-  hbw_free(tt->vals);
+  splatt_hbw_free(tt->vals);
 #else
   splatt_free(tt->vals);
 #endif
@@ -1072,7 +1069,7 @@ static void p_counting_sort_hybrid3(sptensor_t * const tt, idx_t *cmplt)
   }
 
 #ifdef HBW_ALLOC
-  hbw_free(histogram_array);
+  splatt_hbw_free(histogram_array);
 #else
   splatt_free(histogram_array);
 #endif
@@ -1171,20 +1168,20 @@ static void p_counting_sort_hybrid(sptensor_t * const tt, idx_t *cmplt)
   fidx_t **new_ind = splatt_malloc(tt->nmodes*sizeof(fidx_t *));
   for(idx_t i = 0; i < tt->nmodes; ++i) {
 #ifdef HBW_ALLOC
-    if(i != m) hbw_posix_memalign((void **)&new_ind[i], 4096, tt->nnz*sizeof(fidx_t));
+    if(i != m) new_ind[i] = splatt_hbw_malloc(tt->nnz*sizeof(*new_ind));
 #else
-    if(i != m) new_ind[i] = splatt_malloc(tt->nnz*sizeof(fidx_t));
+    if(i != m) new_ind[i] = splatt_malloc(tt->nnz*sizeof(*new_ind));
 #endif
   }
 
   storage_val_t *new_vals;
   idx_t *histogram_array;
 #ifdef HBW_ALLOC
-  hbw_posix_memalign((void **)&new_vals, 4096, tt->nnz*sizeof(new_vals[0]));
-  hbw_posix_memalign((void **)&histogram_array, 4096, (nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
+  new_vals = splatt_hbw_malloc(tt->nnz*sizeof(*new_vals));
+  histogram_array = splatt_hbw_malloc((nslices*omp_get_max_threads() + 1)*sizeof(*histogram_array));
 #else
-  new_vals = splatt_malloc(tt->nnz*sizeof(new_vals[0]));
-  histogram_array = splatt_malloc((nslices*omp_get_max_threads() + 1)*sizeof(idx_t));
+  new_vals = splatt_malloc(tt->nnz*sizeof(*new_vals));
+  histogram_array = splatt_malloc((nslices*omp_get_max_threads() + 1)*sizeof(*histogram_array));
 #endif
 
 #pragma omp parallel

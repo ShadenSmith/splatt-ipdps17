@@ -15,9 +15,6 @@
   /* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
    * to allocate non-performance critical performance data to DDR */
 #endif
-#ifdef HBW_ALLOC
-#include <hbwmalloc.h>
-#endif
 
 /******************************************************************************
  * PRIVATE FUNCTIONS
@@ -38,7 +35,7 @@ static idx_t * p_mkslabptr(
   idx_t const nnz,
   idx_t const nslabs)
 {
-  idx_t * slabs = (idx_t *) calloc(nslabs+1, sizeof(idx_t));
+  idx_t * slabs = (idx_t *) calloc(nslabs+1, sizeof(*slabs));
 
   /* make an offset ptr before prefix sum */
   for(idx_t n=0; n < nnz; ++n) {
@@ -118,7 +115,7 @@ static void p_tile_uniques(
   idx_t const tsize)
 {
   idx_t const ntubes = (nuniques / tsize) + (nuniques % tsize != 0);
-  idx_t * tmkr = (idx_t *) calloc(ntubes+1, sizeof(idx_t));
+  idx_t * tmkr = (idx_t *) calloc(ntubes+1, sizeof(*tmkr));
 
   /* make a marker array so we can quickly move nnz into dest */
   tmkr[0] = start;
@@ -245,8 +242,8 @@ void tt_tile(
   idx_t * uniques[MAX_NMODES];
   idx_t nuniques[MAX_NMODES];
   for(idx_t m=1; m < tt->nmodes; ++m) {
-    seen[dim_perm[m]]    = (idx_t *) calloc(tt->dims[dim_perm[m]], sizeof(idx_t));
-    uniques[dim_perm[m]] = (idx_t *) calloc(tt->dims[dim_perm[m]], sizeof(idx_t));
+    seen[dim_perm[m]]    = calloc(tt->dims[dim_perm[m]], sizeof(**seen));
+    uniques[dim_perm[m]] = calloc(tt->dims[dim_perm[m]], sizeof(**uniques));
   }
 
   /* tile each slab of nonzeros */
@@ -299,14 +296,9 @@ idx_t * tt_densetile(
 
   sptensor_t * newtt = NULL;
 #ifdef HBW_ALLOC
-  idx_t * tcounts;
-  int ret = hbw_posix_memalign((void **)&tcounts, 4096, (nthreads*ntiles + 1)*sizeof(idx_t));
-  if(ret != 0) {
-    fprintf(stderr, "SPLATT: hbw_posix_memalign() returned %d.\n", ret);
-    assert(0);
-  }
+  idx_t * tcounts = splatt_hbw_malloc((nthreads*ntiles+1)*sizeof(*tcounts));
 #else
-  idx_t * tcounts = (idx_t *) splatt_malloc((nthreads*ntiles+1)*sizeof(idx_t));
+  idx_t * tcounts = splatt_malloc((nthreads*ntiles+1)*sizeof(*tcounts));
 #endif
 
 #pragma omp parallel num_threads(nthreads)
@@ -314,7 +306,7 @@ idx_t * tt_densetile(
     int tid = omp_get_thread_num();
 
     idx_t * tcounts_private = tcounts + tid*ntiles;
-    memset(tcounts_private, 0, ntiles*sizeof(idx_t));
+    memset(tcounts_private, 0, ntiles*sizeof(*tcounts_private));
 
     idx_t x_per_thread = (tt->nnz + nthreads - 1)/nthreads;
     idx_t xbegin = SS_MIN(x_per_thread*tid, tt->nnz);
@@ -392,16 +384,16 @@ idx_t * tt_densetile(
   tcounts[ntiles] = tt->nnz;
 
   /* copy data into old struct */
-  par_memcpy(tt->vals, newtt->vals, tt->nnz * sizeof(tt->vals[0]));
+  par_memcpy(tt->vals, newtt->vals, tt->nnz * sizeof(*tt->vals));
   for(idx_t m=0; m < nmodes; ++m) {
-    par_memcpy(tt->ind[m], newtt->ind[m], tt->nnz * sizeof(fidx_t));
+    par_memcpy(tt->ind[m], newtt->ind[m], tt->nnz * sizeof(**tt->ind));
   }
   tt_free(newtt);
 
-  idx_t *real_tcounts = (idx_t *)splatt_malloc((ntiles + 1)*sizeof(idx_t));
-  par_memcpy(real_tcounts, tcounts, (ntiles + 1)*sizeof(idx_t));
+  idx_t * real_tcounts = splatt_malloc((ntiles + 1)*sizeof(*real_tcounts));
+  par_memcpy(real_tcounts, tcounts, (ntiles + 1)*sizeof(*real_tcounts));
 #ifdef HBW_ALLOC
-  hbw_free(tcounts);
+  splatt_hbw_free(tcounts);
 #else
   splatt_free(tcounts);
 #endif

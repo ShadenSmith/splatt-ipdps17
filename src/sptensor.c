@@ -16,9 +16,6 @@
   /* define this and run with "numactl -m 1" and MEMKIND_HBW_NODES=0
    * to allocate sptensor data to DDR */
 #endif
-#ifdef HBW_ALLOC
-#include <hbwmalloc.h>
-#endif
 
 /******************************************************************************
  * PRIVATE FUNCTONS
@@ -76,7 +73,7 @@ double tt_density(
 
 void tt_print_hist(sptensor_t const * const tt, int mode)
 {
-  int *hist = (int *)splatt_malloc(tt->dims[mode]*sizeof(int));
+  int *hist = (int *)splatt_malloc(tt->dims[mode]*sizeof(*hist));
 #pragma omp parallel for
   for(idx_t n=0; n < tt->dims[mode]; ++n) {
     hist[n] = 0;
@@ -117,7 +114,7 @@ idx_t * tt_get_slices(
   idx_t const maxrange = 1 + maxidx - minidx;
 
   /* mark slices which are present and count uniques */
-  idx_t * slice_mkrs = (idx_t *) calloc(maxrange, sizeof(idx_t));
+  idx_t * slice_mkrs = calloc(maxrange, sizeof(*slice_mkrs));
   idx_t found = 0;
 #pragma omp parallel for reduction(+:found)
   for(idx_t n=0; n < nnz; ++n) {
@@ -130,7 +127,7 @@ idx_t * tt_get_slices(
   *nunique = found;
 
   /* now copy unique slices */
-  idx_t * slices = (idx_t *) splatt_malloc(found * sizeof(idx_t));
+  idx_t * slices = (idx_t *) splatt_malloc(found * sizeof(*slices));
   idx_t ptr = 0;
   for(idx_t i=0; i < maxrange; ++i) {
     if(slice_mkrs[i] == 1) {
@@ -189,11 +186,11 @@ idx_t tt_remove_empty(
     maxdim = tt->dims[m] > maxdim ? tt->dims[m] : maxdim;
   }
   /* slice counts */
-  idx_t * scounts = (idx_t *) splatt_malloc(maxdim * sizeof(idx_t));
+  idx_t * scounts = (idx_t *) splatt_malloc(maxdim * sizeof(*scounts));
 
   for(idx_t m=0; m < nmodes; ++m) {
     dim_sizes[m] = 0;
-    memset(scounts, 0, maxdim * sizeof(idx_t));
+    memset(scounts, 0, maxdim * sizeof(*scounts));
 
     /* Fill in indmap */
     for(idx_t n=0; n < tt->nnz; ++n) {
@@ -220,7 +217,7 @@ idx_t tt_remove_empty(
       }
     }
 
-    tt->indmap[m] = (fidx_t *) splatt_malloc(dim_sizes[m] * sizeof(fidx_t));
+    tt->indmap[m] = splatt_malloc(dim_sizes[m] * sizeof(**tt->indmap));
 
     /* relabel all indices in mode m */
     tt->dims[m] = dim_sizes[m];
@@ -263,29 +260,29 @@ sptensor_t * tt_alloc(
   idx_t const nnz,
   idx_t const nmodes)
 {
-  sptensor_t * tt = (sptensor_t*) splatt_malloc(sizeof(sptensor_t));
+  sptensor_t * tt = splatt_malloc(sizeof(*tt));
   tt->tiled = SPLATT_NOTILE;
 
   tt->nnz = nnz;
 #ifdef HBW_ALLOC
-  hbw_posix_memalign((void **)&tt->vals, 4096, nnz * sizeof(tt->vals[0]));
+  tt->vals = splatt_hbw_malloc(nnz * sizeof(*tt->vals));
 #else
-  tt->vals = (storage_val_t*) splatt_malloc(nnz * sizeof(tt->vals[0]));
+  tt->vals = splatt_malloc(nnz * sizeof(*tt->vals));
 #endif
 
   tt->nmodes = nmodes;
   tt->type = (nmodes == 3) ? SPLATT_3MODE : SPLATT_NMODE;
 
-  tt->dims = (idx_t*) splatt_malloc(nmodes * sizeof(idx_t));
-  tt->ind = (fidx_t**) splatt_malloc(nmodes * sizeof(fidx_t*));
+  tt->dims = splatt_malloc(nmodes * sizeof(*dims));
+  tt->ind = splatt_malloc(nmodes * sizeof(**tt->ind));
 #ifdef HBW_ALLOC
   for(idx_t m=0; m < nmodes; ++m) {
-    hbw_posix_memalign((void **)&tt->ind[m], 4096, nnz * sizeof(fidx_t));
+    tt->ind[m] = splatt_hbw_malloc(nnz * sizeof(**tt->ind));
     tt->indmap[m] = NULL;
   }
 #else
   for(idx_t m=0; m < nmodes; ++m) {
-    tt->ind[m] = (fidx_t*) splatt_malloc(nnz * sizeof(fidx_t));
+    tt->ind[m] = splatt_malloc(nnz * sizeof(**tt->ind));
     tt->indmap[m] = NULL;
   }
 #endif
@@ -309,7 +306,7 @@ void tt_fill(
   tt->nmodes = nmodes;
   tt->type = (nmodes == 3) ? SPLATT_3MODE : SPLATT_NMODE;
 
-  tt->dims = (idx_t*) splatt_malloc(nmodes * sizeof(idx_t));
+  tt->dims = (idx_t*) splatt_malloc(nmodes * sizeof(*tt->dims));
   for(idx_t m=0; m < nmodes; ++m) {
     tt->indmap[m] = NULL;
 

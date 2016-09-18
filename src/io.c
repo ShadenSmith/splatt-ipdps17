@@ -19,9 +19,6 @@
   /* define this and run with "numalloc -m 1" and MEMKIND_HBW_NODES=0
    * to allocate non-performance critical performance data to DDR */
 #endif
-#ifdef HBW_ALLOC
-#include <hbwmalloc.h>
-#endif
 
 
 /******************************************************************************
@@ -221,9 +218,9 @@ static sptensor_t * p_tt_read_binary_file(
   for(idx_t m=0; m < nmodes; ++m) {
     double t = omp_get_wtime();
 #ifdef HBW_ALLOC
-    hbw_posix_memalign((void **)&tt->ind[m], 4096, nnz * sizeof(tt->ind[m][0]));
+    tt->ind[m] = splatt_hbw_malloc(nnz * sizeof(tt->ind[m][0]));
 #else
-    tt->ind[m] = (fidx_t*) splatt_malloc(nnz * sizeof(tt->ind[m][0]));
+    tt->ind[m] = splatt_malloc(nnz * sizeof(tt->ind[m][0]));
 #endif
     tt->indmap[m] = NULL;
     fill_binary_fidx(tt->ind[m], nnz, &header, fin);
@@ -231,9 +228,9 @@ static sptensor_t * p_tt_read_binary_file(
 
   double t = omp_get_wtime();
 #ifdef HBW_ALLOC
-  hbw_posix_memalign((void **)&tt->vals, 4096, nnz * sizeof(tt->vals[0]));
+  tt->vals = splatt_hbw_malloc(nnz * sizeof(tt->vals[0]));
 #else
-  tt->vals = (storage_val_t*) splatt_malloc(nnz * sizeof(tt->vals[0]));
+  tt->vals = splatt_malloc(nnz * sizeof(tt->vals[0]));
 #endif
   fill_binary_storage_val(tt->vals, nnz, &header, fin);
 

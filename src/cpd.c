@@ -20,9 +20,6 @@
    * to allocate factor matrices to MCDRAM
    * Should be used together with HBW_ALLOC in matrix.c  */
 #endif
-#ifdef HBW_ALLOC
-#include <hbwmalloc.h>
-#endif
 
 #ifndef __AVX512F__
 #define SPLATT_USE_DSYRK
@@ -52,7 +49,7 @@ int splatt_cpd_als(
   }
   mats[MAX_NMODES] = mat_alloc(maxdim, nfactors);
 
-  val_t * lambda = (val_t *) splatt_malloc(nfactors * sizeof(val_t));
+  val_t * lambda = splatt_malloc(nfactors * sizeof(*lambda));
 
   /* do the factorization! */
   factored->fit = cpd_als_iterate(tensors, mats, lambda, nfactors, &rinfo,
@@ -82,9 +79,9 @@ void splatt_free_kruskal(
   free(factored->lambda);
   for(idx_t m=0; m < factored->nmodes; ++m) {
 #ifdef HBW_ALLOC
-    hbw_free(factored->factors[m]);
+    splatt_hbw_free(factored->factors[m]);
 #else
-    free(factored->factors[m]);
+    splatt_free(factored->factors[m]);
 #endif
   }
 }
