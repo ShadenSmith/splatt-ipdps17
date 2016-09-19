@@ -641,7 +641,6 @@ static void p_set_nfibs_root(
   for(idx_t x=1; x < nnz; ++x) {
     assert(ttind[x-1] <= ttind[x]);
     if(ttind[x] != ttind[x-1]) {
-      //assert(nfibs == ttind[x]);
       ++nfibs;
     }
   }
