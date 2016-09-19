@@ -641,7 +641,7 @@ static void p_set_nfibs_root(
   for(idx_t x=1; x < nnz; ++x) {
     assert(ttind[x-1] <= ttind[x]);
     if(ttind[x] != ttind[x-1]) {
-      assert(nfibs == ttind[x]);
+      //assert(nfibs == ttind[x]);
       ++nfibs;
     }
   }
@@ -1447,15 +1447,15 @@ void csf_free(
 void csf_free_mode(
     splatt_csf * const csf)
 {
-  /* free each tile of sparsity pattern */
-  for(idx_t t=0; t < csf->ntiles; ++t) {
-    p_free_vals(csf->pt[t].vals);
-    p_free_fids(csf->pt[t].fids[csf->nmodes-1]);
-
-    for(idx_t m=0; m < csf->nmodes-1; ++m) {
-      p_free_fptr(csf->pt[t].fptr[m]);
-      p_free_fids(csf->pt[t].fids[m]);
-    }
+  /* 
+   * Free each tile of sparsity pattern. All tiles work on the same contiguous
+   * buffer, so only free once.
+   */
+  p_free_vals(csf->pt[0].vals);
+  p_free_fids(csf->pt[0].fids[csf->nmodes-1]);
+  for(idx_t m=0; m < csf->nmodes-1; ++m) {
+    p_free_fptr(csf->pt[0].fptr[m]);
+    p_free_fids(csf->pt[0].fids[m]);
   }
   splatt_free(csf->hub_slices);
   splatt_free(csf->pt);
