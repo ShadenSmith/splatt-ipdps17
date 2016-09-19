@@ -107,11 +107,6 @@ static sptensor_t * p_tt_read_file(
 
   free(line);
 
-  for(int i=0; i < tt->nmodes; ++i) {
-    printf("%d ", tt->ind[i][123456]);
-  }
-  printf("%f\n", tt->vals[123456]);
-
   return tt;
 }
 
@@ -211,7 +206,7 @@ static sptensor_t * p_tt_read_binary_file(
   /* fill in tensor data */
   for(idx_t m=0; m < nmodes; ++m) {
     double t = omp_get_wtime();
-#if SPLATT_NONPERFORM_HBW
+#if SPLATT_SPTENSOR_HBW
     tt->ind[m] = splatt_hbw_malloc(nnz * sizeof(tt->ind[m][0]));
 #else
     tt->ind[m] = splatt_malloc(nnz * sizeof(tt->ind[m][0]));
@@ -221,7 +216,7 @@ static sptensor_t * p_tt_read_binary_file(
   }
 
   double t = omp_get_wtime();
-#if SPLATT_NONPERFORM_HBW
+#if SPLATT_SPTENSOR_HBW
   tt->vals = splatt_hbw_malloc(nnz * sizeof(tt->vals[0]));
 #else
   tt->vals = splatt_malloc(nnz * sizeof(tt->vals[0]));
