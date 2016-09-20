@@ -1367,7 +1367,7 @@ static void p_csf_alloc_densetile(
     }
   } /* for each mode */
 
-  free(nnz_ptr);
+  splatt_free(nnz_ptr);
 }
 
 
@@ -1439,7 +1439,7 @@ void csf_free(
     csf_free_mode(csf + i);
   }
 
-  free(csf);
+  splatt_free(csf);
 }
 
 
@@ -1587,7 +1587,7 @@ splatt_csf * csf_alloc(
     last_mode = ret[0].dim_perm[tt->nmodes-1];
     p_mk_csf(ret + 1, tt, CSF_SORTED_MINUSONE, last_mode, tmp_opts);
 
-    free(tmp_opts);
+    splatt_free_opts(tmp_opts);
     break;
 
   case SPLATT_CSF_ALLMODE:

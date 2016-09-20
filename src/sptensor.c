@@ -268,7 +268,7 @@ sptensor_t * tt_alloc(
   tt->type = (nmodes == 3) ? SPLATT_3MODE : SPLATT_NMODE;
 
   tt->dims = splatt_malloc(nmodes * sizeof(*tt->dims));
-  tt->ind = splatt_malloc(nmodes * sizeof(**tt->ind));
+  tt->ind = splatt_malloc(nmodes * sizeof(*tt->ind));
 #if SPLATT_SPTENSOR_HBW
   for(idx_t m=0; m < nmodes; ++m) {
     tt->ind[m] = splatt_hbw_malloc(nnz * sizeof(**tt->ind));
@@ -316,7 +316,12 @@ void tt_fill(
 void tt_free(
   sptensor_t * tt)
 {
-  tt->nnz = 0;
+#if SPLATT_SPTENSOR_HBW
+  splatt_hbw_free(tt->vals);
+#else
+  splatt_free(tt->vals);
+#endif
+
   for(idx_t m=0; m < tt->nmodes; ++m) {
 #if SPLATT_SPTENSOR_HBW
     splatt_hbw_free(tt->ind[m]);
@@ -325,16 +330,12 @@ void tt_free(
 #endif
     splatt_free(tt->indmap[m]);
   }
-  tt->nmodes = 0;
+
   splatt_free(tt->dims);
   splatt_free(tt->ind);
-#if SPLATT_SPTENSOR_HBW
-  splatt_hbw_free(tt->vals);
-#else
-  splatt_free(tt->vals);
-#endif
-  free(tt);
+  splatt_free(tt);
 }
+
 
 spmatrix_t * tt_unfold(
   sptensor_t * const tt,
