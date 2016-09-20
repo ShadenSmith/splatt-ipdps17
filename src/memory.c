@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <assert.h>
+#include <errno.h>
 
 
 #if SPLATT_HBW_ALLOC
@@ -15,10 +16,27 @@ void * splatt_malloc(
 {
   void * ptr = NULL;
   int ret = posix_memalign(&ptr, SPLATT_MEM_ALIGNMENT, bytes);
-  if(ret != 0) {
-    fprintf(stderr, "SPLATT: posix_memalign() returned %d.\n", ret);
+
+  switch(ret) {
+  case 0:
+    break;
+  case ENOMEM:
+    fprintf(stderr, "SPLATT: posix_memalign() returned ENOMEM. ");
+    fprintf(stderr,"Insufficient memory.");
     assert(0);
+    break;
+  case EINVAL:
+    fprintf(stderr, "SPLATT: posix_memalign() returned EINVAL. ");
+    fprintf(stderr,"Alignment %d is invalid.", SPLATT_MEM_ALIGNMENT);
+    assert(0);
+    break;
+  default:
+    fprintf(stderr, "SPLATT: posix_memalign() unknown error: %d.", 
+        ret);
+    assert(0);
+    break;
   }
+
   if(ptr == NULL) {
     fprintf(stderr, "SPLATT: posix_memalign() returned NULL.\n");
     assert(0);
@@ -34,6 +52,7 @@ void splatt_free(
 }
 
 
+
 void * splatt_hbw_malloc(
     size_t const bytes)
 {
@@ -41,10 +60,26 @@ void * splatt_hbw_malloc(
   void * ptr = NULL;
   int ret = hbw_posix_memalign(&ptr, SPLATT_MEM_ALIGNMENT, bytes);
 
-  if(ret != 0) {
-    fprintf(stderr, "SPLATT: hbw_posix_memalign() returned %d.\n", ret);
+  switch(ret) {
+  case 0:
+    break;
+  case ENOMEM:
+    fprintf(stderr, "SPLATT: hbw_posix_memalign() returned ENOMEM. ");
+    fprintf(stderr,"Insufficient memory.");
     assert(0);
+    break;
+  case EINVAL:
+    fprintf(stderr, "SPLATT: hbw_posix_memalign() returned EINVAL. ");
+    fprintf(stderr,"Alignment %d is invalid.", SPLATT_MEM_ALIGNMENT);
+    assert(0);
+    break;
+  default:
+    fprintf(stderr, "SPLATT: hbw_posix_memalign() unknown error: %d.", 
+        ret);
+    assert(0);
+    break;
   }
+
   if(ptr == NULL) {
     fprintf(stderr, "SPLATT: hbw_posix_memalign() returned NULL.\n");
     assert(0);
