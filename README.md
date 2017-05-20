@@ -1,3 +1,23 @@
+This repository is a fork of [SPLATT](https://github.com/ShadenSmith/splatt) used
+in the IPDPS'17 paper *Sparse Tensor Factorization on Many-Core Processors with 
+High-Bandwidth Memory* by Shaden Smith, Jongsoo Park, and George Karypis. The code
+currently requires access to the Intel compiler chain and machines with support for
+AVX-2 or AVX-512 vector instructions. This source code is specifically optimized
+for Intel Knights Landing (KNL). The main SPLATT repository will be updated as
+the code is cleaned/generalized.
+
+To configure with optimizations for KNL:
+
+    $ ./my_configure --knl
+
+Otherwise:
+
+    $ ./my_configure
+
+The `my_configure` script simply wraps `configure` while invoking the Intel
+compiler toolchain.
+
+
 The Surprisingly ParalleL spArse Tensor Toolkit
 ===============================================
 
