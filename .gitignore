@@ -25,3 +25,5 @@ a.out
 doxygen/html
 doxygen/latex
 doxygen/*.log
+
+src/SpMP/libspmp.a
